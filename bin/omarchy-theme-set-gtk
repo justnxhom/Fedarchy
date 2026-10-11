@@ -1,0 +1,125 @@
+#!/bin/bash
+# Install the theme for GTK applications.
+#
+# GTK keeps two independent configurations, ~/.config/gtk-3.0 and
+# ~/.config/gtk-4.0, and an application only ever reads the one matching its
+# toolkit. This desktop runs both -- GTK 4 for the file manager and newer GNOME
+# tools, GTK 3 for older dialogs -- so the same stylesheet is installed into
+# both directories. Styling only one is what leaves a theme looking half
+# applied.
+#
+# The stylesheet is what carries the palette. A theme name cannot: the only GTK
+# themes installed are the stock adw-gtk3 pair, whose colours are fixed, so
+# pointing at them makes every GTK application look the same on every theme.
+# The theme name is still kept in settings.ini, matching what
+# omarchy-theme-set-gnome sets through gsettings, so the two do not disagree.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/gtk.css"
+COLORS_FILE="$THEME_DIR/colors.toml"
+
+[[ -f $GENERATED ]] || exit 0
+
+# Written through a temporary file in the same directory and then renamed,
+# because a plain copy truncates the target first: a running GTK application
+# reading it mid-copy would see half a file and drop the rest of its styling. A
+# rename within one filesystem is atomic, so a reader sees either the old file
+# or the new one.
+install_atomically() {
+  local source="$1" target="$2" tmp
+  # Cleared before writing, so a run killed between creating the temporary file
+  # and renaming it does not leave one behind in the toolkit's own directory. The
+  # name is the target plus six random characters, which nothing else uses, so
+  # the sweep cannot touch a real file. Without it an interrupted theme switch
+  # leaves a zero-byte gtk.css.XXXXXXXX sitting next to the real one, and the
+  # two gtk toolkit directories end up disagreeing about the theme.
+  rm -f "${target}".??????
+  tmp="$(mktemp "${target}.XXXXXX")"
+  if cat "$source" >"$tmp"; then
+    chmod --reference="$target" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+    mv -f "$tmp" "$target"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# Set one key in an ini file, leaving every other line exactly as it was.
+# An existing key is replaced where it stands rather than appended alongside,
+# and a missing one goes inside the section it belongs to, so a re-run cannot
+# stack up duplicates.
+set_ini_key() {
+  local file="$1" key="$2" value="$3" tmp
+  rm -f "${file}".??????
+  tmp="$(mktemp "${file}.XXXXXX")"
+
+  if [[ -f $file ]]; then
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+      awk -v key="$key" -v value="$value" '
+        BEGIN { replaced = 0 }
+        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+          if (!replaced) { print key "=" value; replaced = 1 }
+          next
+        }
+        { print }
+      ' "$file" >"$tmp"
+    elif grep -qE '^[[:space:]]*\[Settings\][[:space:]]*$' "$file"; then
+      # Insert directly under the section header, so the key cannot land in
+      # whatever section happens to come next.
+      awk -v key="$key" -v value="$value" '
+        { print }
+        /^[[:space:]]*\[Settings\][[:space:]]*$/ && !inserted {
+          print key "=" value
+          inserted = 1
+        }
+      ' "$file" >"$tmp"
+    else
+      cat "$file" >"$tmp"
+      printf '\n[Settings]\n%s=%s\n' "$key" "$value" >>"$tmp"
+    fi
+  else
+    printf '[Settings]\n%s=%s\n' "$key" "$value" >"$tmp"
+  fi
+
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  mv -f "$tmp" "$file"
+}
+
+mode=dark
+if [[ -f $COLORS_FILE ]]; then
+  mode=$(omarchy-theme-color --file "$COLORS_FILE" mode)
+fi
+if [[ $mode == "light" ]]; then
+  theme_name="adw-gtk3"
+else
+  theme_name="adw-gtk3-dark"
+fi
+
+for version in 3.0 4.0; do
+  config_dir="$HOME/.config/gtk-$version"
+  target="$config_dir/gtk.css"
+  mkdir -p "$config_dir"
+
+  # The first time, keep whatever was there: it is hand-written until the theme
+  # pipeline takes it over, and losing it silently would be the worst outcome.
+  if [[ -f $target && ! -f $target.omarchy-backup ]]; then
+    cp "$target" "$target.omarchy-backup"
+  fi
+
+  install_atomically "$GENERATED" "$target"
+  set_ini_key "$config_dir/settings.ini" gtk-theme-name "$theme_name"
+
+  # The stylesheet sets foreground and background explicitly, but libadwaita
+  # widgets -- the file manager's sidebar, header bars -- draw some of their own
+  # base colours from this key instead. Left unset, they follow the desktop
+  # setting, which a theme switch does not change, so a light theme would end up
+  # with dark widgets drawn on a light stylesheet.
+  if [[ $mode == "light" ]]; then
+    set_ini_key "$config_dir/settings.ini" gtk-application-prefer-dark-theme false
+  else
+    set_ini_key "$config_dir/settings.ini" gtk-application-prefer-dark-theme true
+  fi
+done
+
+printf 'gtk theme installed: %s\n' "$HOME/.config/gtk-3.0/gtk.css"

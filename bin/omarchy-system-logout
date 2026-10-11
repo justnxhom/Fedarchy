@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Log out after closing application windows
+# omarchy:examples=omarchy logout | omarchy system logout
+# omarchy:aliases=omarchy logout
+
+omarchy-osd -i logout -m "Logging out" -d 5000
+
+omarchy-hyprland-window-close-all
+sleep 1 # Allow apps like Chrome to shutdown correctly
+
+hyprctl dispatch exit

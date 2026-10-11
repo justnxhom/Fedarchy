@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Print when system packages were last upgraded
+
+# Use DNF5 history to find the last upgrade transaction
+last_upgrade=$(dnf5 history list --reverse 2>/dev/null | grep -i "upgrade" | head -1 || true)
+
+if [[ -n $last_upgrade ]]; then
+  echo "$last_upgrade"
+else
+  echo "No upgrade history found"
+fi

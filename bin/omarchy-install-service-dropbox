@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# omarchy:summary=Install and start the Dropbox service. Must then be authenticated via the web.
+
+set -e
+
+echo "Installing all dependencies..."
+omarchy-pkg-add dropbox libappindicator-gtk3 nautilus-dropbox
+
+echo "Adding Dropbox to the bar..."
+omarchy-plugin-enable omarchy.dropbox
+
+echo "Starting Dropbox..."
+dropbox-cli start &>/dev/null &
+echo "See Dropbox icon behind  hover tray in top right and right-click for setup."

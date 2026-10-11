@@ -1,0 +1,61 @@
+#!/bin/bash
+# Install the theme for Ekphos, the markdown renderer.
+#
+# Ekphos is configured by ~/.config/ekphos/config.toml, whose `theme` key names
+# either a built-in theme or a file in ~/.config/ekphos/themes. This writes a
+# generated theme there and points that key at it.
+#
+# The theme file is written under a fixed name rather than one per Omarchy
+# theme. The alternative -- omarchy-nord.toml, omarchy-gruvbox.toml, and so on --
+# would leave every theme ever selected sitting in the directory for ekphos to
+# choose between, all but one of them stale, and nothing would ever clean them
+# up. One file that is always current is the same result with none of that.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/ekphos.toml"
+CONFIG_DIR="$HOME/.config/ekphos"
+CONFIG="$CONFIG_DIR/config.toml"
+THEMES_DIR="$CONFIG_DIR/themes"
+TARGET="$THEMES_DIR/omarchy.toml"
+
+[[ -f $GENERATED ]] || exit 0
+
+# Applied only where the configuration already exists. Creating a config.toml
+# would mean choosing a notes directory and turning on update checks for someone
+# who may not have ekphos installed at all.
+[[ -f $CONFIG ]] || exit 0
+
+mkdir -p "$THEMES_DIR"
+
+rm -f "${TARGET}".??????
+tmp="$(mktemp "${TARGET}.XXXXXX")"
+if cat "$GENERATED" >"$tmp"; then
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$TARGET"
+else
+  rm -f "$tmp"
+  exit 1
+fi
+
+# The theme key is replaced where it stands rather than appended, because ekphos
+# reads the last occurrence: a second `theme =` line would leave the file with
+# two answers and the generated one silently ignored. A key that is not there is
+# added, so ekphos picks the theme up even if the config was trimmed by hand.
+if grep -qE '^[[:space:]]*theme[[:space:]]*=' "$CONFIG"; then
+  tmp="$(mktemp "${CONFIG}.XXXXXX")"
+  awk '
+    BEGIN { replaced = 0 }
+    /^[[:space:]]*theme[[:space:]]*=/ {
+      if (!replaced) { print "theme = \"omarchy\""; replaced = 1 }
+      next
+    }
+    { print }
+  ' "$CONFIG" >"$tmp"
+  chmod --reference="$CONFIG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  mv -f "$tmp" "$CONFIG"
+else
+  printf '\ntheme = "omarchy"\n' >>"$CONFIG"
+fi
+
+printf 'ekphos theme installed: %s\n' "$TARGET"

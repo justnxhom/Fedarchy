@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# omarchy:summary=Install and configure Voxtype dictation
+# omarchy:requires-sudo=true
+
+set -e
+
+# Install voxtype and configure it for use.
+
+echo "Voxtype is not available for Fedora yet." >&2
+exit 1

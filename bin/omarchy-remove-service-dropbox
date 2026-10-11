@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# omarchy:summary=Remove Dropbox and its bar plugin.
+# omarchy:requires-sudo=true
+
+set -e
+
+dropbox-cli stop 2>/dev/null || true
+omarchy-plugin-disable omarchy.dropbox
+omarchy-pkg-drop dropbox libappindicator-gtk3 nautilus-dropbox
+
+echo ""
+echo "Dropbox has been removed."

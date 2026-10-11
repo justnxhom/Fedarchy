@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# This hook runs before `omarchy update` refreshes system packages with DNF5.
+# Use it to layer customizations that must exist before the upgrade — common
+# cases are adding a custom RPM repo, importing a local GPG key, or setting
+# DNF variables.
+#
+# The hook runs as the invoking user with a warm sudo cache.
+#
+# To put it into use, remove .sample from this file name.
+
+# Example: add a local RPM repo file before the upgrade runs.
+# sudo tee /etc/yum.repos.d/local.repo >/dev/null <<'REPO'
+# [local]
+# name=Local packages
+# baseurl=file:///opt/local-repo
+# enabled=1
+# gpgcheck=0
+# REPO

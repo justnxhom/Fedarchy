@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# omarchy:summary=Set the layout of the active workspace (dwindle, master, scrolling)
+# omarchy:args=<dwindle|master|scrolling>
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: omarchy-hyprland-workspace-layout <dwindle|master|scrolling>"
+}
+
+fail() { echo "Error: $*" >&2; exit 1; }
+
+(( $# == 1 )) || { usage; exit 1; }
+
+layout="$1"
+case "$layout" in
+  dwindle | master | scrolling) ;;
+  *) fail "unknown layout: $layout" ;;
+esac
+
+ACTIVE_WORKSPACE=$(hyprctl activeworkspace -j | jq -r '.id')
+[[ $ACTIVE_WORKSPACE =~ ^-?[0-9]+$ ]] || fail "could not read the active workspace"
+
+LAYOUTS_DIR="$HOME/.local/state/omarchy/workspace-layouts"
+LAYOUT_FILE="$LAYOUTS_DIR/$ACTIVE_WORKSPACE.lua"
+
+mkdir -p "$LAYOUTS_DIR"
+printf 'hl.workspace_rule({ workspace = "%s", layout = "%s" })\n' "$ACTIVE_WORKSPACE" "$layout" >"$LAYOUT_FILE"
+
+# Hyprland 0.56 rejects hyprctl keyword on non-legacy parsers, so the eval path
+# is the one that actually applies. An unknown layout name is accepted silently
+# by the rule but leaves the workspace on its previous layout, so verify after.
+if ! hyprctl eval "hl.workspace_rule({ workspace = \"$ACTIVE_WORKSPACE\", layout = \"$layout\" })" >/dev/null 2>&1; then
+  hyprctl keyword workspace "$ACTIVE_WORKSPACE, layout:$layout" >/dev/null 2>&1 ||
+    fail "could not apply layout: $layout"
+fi
+
+sleep 0.3
+applied=$(hyprctl workspaces -j | jq -r --argjson id "$ACTIVE_WORKSPACE" '.[] | select(.id == $id) | .tiledLayout')
+if [[ $applied != "$layout" ]]; then
+  # Undo the persisted rule so a rejected layout is not restored on reload.
+  rm -f "$LAYOUT_FILE"
+  fail "layout not applied (workspace is on: ${applied:-unknown})"
+fi
+
+omarchy-notification-send -g 󱂬 "Workspace layout set to $layout"

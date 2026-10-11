@@ -1,0 +1,87 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SHELL_DIR="${PROJECT_ROOT}/shell"
+
+usage() {
+    echo "Usage: fedarchy-shell <command>"
+    echo ""
+    echo "Commands:"
+    echo "  ping          Check if shell is running"
+    echo "  reload        Reload shell configuration"
+    echo "  status        Show shell status"
+    echo "  version       Show shell version"
+    echo "  log           Show shell log"
+    echo "  help          Show this help"
+}
+
+shell_running() {
+    command -v quickshell >/dev/null 2>&1 || return 127
+    quickshell -p "${SHELL_DIR}" --ping >/dev/null 2>&1
+}
+
+cmd_ping() {
+    local status=0
+    shell_running || status=$?
+
+    case $status in
+        0) echo "Shell is running." ;;
+        127) echo "Quickshell is not installed." >&2; echo "Shell status is unknown." ;;
+        *) echo "Shell is not running." ;;
+    esac
+
+    return "$status"
+}
+
+cmd_reload() {
+    if quickshell -p "${SHELL_DIR}" --reload 2>/dev/null; then
+        echo "Shell reloaded."
+    else
+        echo "Failed to reload shell."
+        exit 1
+    fi
+}
+
+cmd_status() {
+    local status=0
+    shell_running || status=$?
+
+    echo "Fedarchy Shell"
+    echo "  Version:  0.1.0"
+    echo "  Root:     ${PROJECT_ROOT}"
+    echo "  Shell:    ${SHELL_DIR}"
+    case $status in
+        0) echo "  Status:   running" ;;
+        127) echo "  Status:   unknown (Quickshell is not installed)" ;;
+        *) echo "  Status:   not running" ;;
+    esac
+
+    return "$status"
+}
+
+cmd_version() {
+    echo "Fedarchy 0.1.0"
+}
+
+cmd_log() {
+    local tag="${FEDARCHY_SHELL_LOG_TAG:-fedarchy-dev-shell}"
+
+    if ! command -v journalctl >/dev/null 2>&1; then
+        echo "journalctl is not installed; shell logs are unavailable." >&2
+        return 127
+    fi
+
+    journalctl --user --no-pager -t "$tag"
+}
+
+case "${1:-help}" in
+    ping)    cmd_ping ;;
+    reload)  cmd_reload ;;
+    status)  cmd_status ;;
+    version) cmd_version ;;
+    log)     cmd_log ;;
+    help)    usage ;;
+    *)       echo "Unknown command: $1"; usage; exit 1 ;;
+esac

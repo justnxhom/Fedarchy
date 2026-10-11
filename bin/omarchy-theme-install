@@ -1,0 +1,243 @@
+#!/bin/bash
+# Install a theme from a git repo, without pulling the whole repository.
+#
+# Theme repos are mostly wallpapers, and a popular one can be a few hundred
+# megabytes of them. None of that is needed to apply a theme: the palette in
+# colors.toml and a handful of backgrounds are enough, so this clones without
+# blob content, works out which wallpapers to keep from the tree alone, and
+# then fetches only those. The rest of the repository is never downloaded.
+#
+# Which wallpapers are kept, in order of precedence:
+#   --wallpaper NAME   keep exactly this one (repeatable)
+#   --wallpapers N     keep the first N in name order (default 4)
+#   --all-wallpapers   keep every wallpaper, for when the sizes do not matter
+#
+# A theme repo may also ship its own configuration for the author's machine --
+# a compositor config, an editor config, terminal configs, Lua. That is not
+# applied: omarchy-theme-set reduces a repo theme to its palette and media, and
+# says what it dropped. Themes you write yourself, and Omarchy's own, are
+# staged whole.
+#
+# The clone lands beside the target and is only swapped in once it is complete,
+# so a failed or interrupted install leaves any existing theme untouched.
+set -euo pipefail
+
+WALLPAPER_COUNT="${OMARCHY_THEME_WALLPAPERS:-4}"
+KEEP_ALL=0
+WANTED=()
+REPO_URL=""
+
+usage() {
+  cat <<'USAGE'
+Usage: omarchy-theme-install [options] [git-repo-url]
+
+  -n, --wallpapers N   keep only the first N wallpapers (default 4)
+  -w, --wallpaper NAME keep only this wallpaper (repeatable)
+      --all-wallpapers keep every wallpaper in the repo
+  -h, --help           show this help
+
+Wallpapers are counted in name order, so a repo that numbers them 0-, 1-, 2-…
+keeps the lowest numbers. Name the ones you want with --wallpaper when the
+early ones are the large files.
+
+Environment:
+  OMARCHY_THEME_WALLPAPERS   default for --wallpapers
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n | --wallpapers)
+      [[ ${2:-} =~ ^[0-9]+$ ]] || {
+        echo "Error: --wallpapers needs a number, got '${2:-}'." >&2
+        exit 1
+      }
+      WALLPAPER_COUNT="$2"
+      shift 2
+      ;;
+    -w | --wallpaper)
+      [[ -n ${2:-} ]] || {
+        echo "Error: --wallpaper needs a name." >&2
+        exit 1
+      }
+      WANTED+=("$2")
+      shift 2
+      ;;
+    --all-wallpapers)
+      KEEP_ALL=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Error: unknown option '$1'." >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      if [[ -n $REPO_URL ]]; then
+        echo "Error: only one repository URL, got '$REPO_URL' and '$1'." >&2
+        exit 1
+      fi
+      REPO_URL="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z $REPO_URL ]]; then
+  echo -e "\e[32mSee https://omarchy.org/themes/\n\e[0m"
+  REPO_URL=$(gum input --placeholder="Git repo URL (https or git@host:org/repo.git)" --header="")
+fi
+if [[ -z $REPO_URL ]]; then
+  exit 1
+fi
+
+omarchy-git-url-check "$REPO_URL" || exit 1
+
+THEMES_DIR="$HOME/.config/omarchy/themes"
+REPO_PATH="$REPO_URL"
+[[ $REPO_PATH != *"://"* && $REPO_PATH == *:* && ${REPO_PATH%%:*} != */* ]] && REPO_PATH="${REPO_PATH#*:}"
+THEME_NAME=$(basename -- "$REPO_PATH" .git | sed -E 's/^omarchy-//; s/-theme$//' | tr '[:upper:]' '[:lower:]')
+THEME_PATH="$THEMES_DIR/$THEME_NAME"
+
+if ! (LC_ALL=C; [[ $THEME_NAME =~ ^[a-z0-9_][a-z0-9._+-]*$ ]]); then
+  echo "Error: '$REPO_URL' does not give a usable theme name." >&2
+  exit 1
+fi
+
+mkdir -p "$THEMES_DIR"
+STAGE_PATH="$THEMES_DIR/.incoming-$THEME_NAME.$$"
+
+# Anything that goes wrong from here on must not leave a half-written theme
+# behind, and must not have touched an existing install: the staged clone is
+# only moved into place once it is complete and known to carry a palette.
+cleanup() {
+  local status=$?
+  [[ -d $STAGE_PATH ]] && rm -rf "$STAGE_PATH"
+  return $status
+}
+trap cleanup EXIT
+
+echo "Fetching $THEME_NAME (no wallpaper data yet)..."
+
+# --filter=blob:none keeps the file contents out of the clone, --depth=1 keeps
+# the history out, and --no-checkout stops git materialising a worktree before
+# the sparse rules below decide what it should contain. A server that cannot do
+# a partial clone ignores the filter and sends everything; that is reported
+# afterwards rather than silently accepted.
+if ! git clone --quiet --filter=blob:none --depth 1 --no-checkout -- "$REPO_URL" "$STAGE_PATH"; then
+  echo "Error: could not reach or clone '$REPO_URL'." >&2
+  echo "The theme was not installed, and any existing copy of it is untouched." >&2
+  exit 1
+fi
+
+# Whether the filter was actually honoured is counted rather than configured: a
+# server that ignores the filter still records a promisor remote, so the config
+# would claim a partial clone that never happened. Asking cat-file whether one
+# blob is present would be worse than useless -- in a partial clone that fetches
+# the blob on demand, which is the download this script exists to avoid -- so
+# the local object list is compared against the tree instead.
+tracked_blobs=$(git -C "$STAGE_PATH" ls-tree -r HEAD | awk '$2 == "blob"' | wc -l)
+local_blobs=$(git -C "$STAGE_PATH" cat-file --batch-all-objects --batch-check 2>/dev/null |
+  awk '$2 == "blob"' | wc -l)
+if ((tracked_blobs > 0 && local_blobs < tracked_blobs)); then
+  echo "Partial clone active: only the files the theme needs will be fetched."
+else
+  echo "This git server cannot do a partial clone, so the whole repository was fetched." >&2
+fi
+
+# The wallpapers are listed from the tree, which the partial clone already has,
+# so choosing between them costs nothing.
+AVAILABLE=()
+while IFS= read -r entry; do
+  name=${entry#backgrounds/}
+  # Only the wallpapers a theme actually offers: a nested file is not something
+  # the theme set or the picker looks at.
+  [[ $name == */* ]] && continue
+  AVAILABLE+=("$name")
+done < <(git -C "$STAGE_PATH" ls-tree -r --name-only HEAD -- backgrounds/ 2>/dev/null || true)
+
+KEEP=()
+if ((KEEP_ALL)); then
+  KEEP=("${AVAILABLE[@]+"${AVAILABLE[@]}"}")
+elif ((${#WANTED[@]})); then
+  for name in "${WANTED[@]}"; do
+    found=0
+    for candidate in "${AVAILABLE[@]+"${AVAILABLE[@]}"}"; do
+      if [[ $candidate == "$name" ]]; then
+        found=1
+        break
+      fi
+    done
+    if ((found == 0)); then
+      echo "Error: the repo has no wallpaper named '$name'." >&2
+      (( ${#AVAILABLE[@]} )) && echo "It has: ${AVAILABLE[*]}" >&2
+      exit 1
+    fi
+    KEEP+=("$name")
+  done
+else
+  for name in "${AVAILABLE[@]+"${AVAILABLE[@]}"}"; do
+    ((${#KEEP[@]} >= WALLPAPER_COUNT)) && break
+    KEEP+=("$name")
+  done
+fi
+
+if ((${#KEEP[@]})); then
+  # Quoted deliberately: an unquoted /* is a glob and would expand to the root
+  # of the filesystem, leaving the theme's own files outside the sparse rules.
+  PATTERNS=('/*' '!/backgrounds/')
+  for name in "${KEEP[@]}"; do
+    PATTERNS+=("/backgrounds/$name")
+  done
+  if ! git -C "$STAGE_PATH" sparse-checkout set --no-cone "${PATTERNS[@]}" >/dev/null 2>&1; then
+    echo "Error: this git version cannot do a sparse checkout, so the theme was not installed." >&2
+    echo "Any existing copy of it is untouched." >&2
+    exit 1
+  fi
+elif ((${#AVAILABLE[@]})); then
+  # A count of zero with wallpapers present would otherwise stage the whole
+  # backgrounds directory, which is the thing being avoided.
+  git -C "$STAGE_PATH" sparse-checkout set --no-cone '/*' '!/backgrounds/' >/dev/null 2>&1 || true
+fi
+
+# Only now are the blobs for the kept wallpapers fetched.
+if ! git -C "$STAGE_PATH" checkout --quiet 2>/dev/null; then
+  git -C "$STAGE_PATH" checkout >/dev/null 2>&1 || true
+fi
+
+if ((${#AVAILABLE[@]})); then
+  echo "Keeping ${#KEEP[@]} of ${#AVAILABLE[@]} wallpapers: ${KEEP[*]:-none}"
+  dropped=$((${#AVAILABLE[@]} - ${#KEEP[@]}))
+  ((dropped > 0)) && echo "Not downloading the other $dropped."
+else
+  echo "The repo has no backgrounds/ directory; the theme will use its default background."
+fi
+
+# A theme with neither a palette nor the legacy terminal config to derive one
+# from cannot be applied, and finding that out after the swap would leave a
+# broken theme installed.
+if [[ ! -f $STAGE_PATH/colors.toml && ! -f $STAGE_PATH/alacritty.toml ]]; then
+  echo "Error: '$THEME_NAME' has neither colors.toml nor alacritty.toml, so it carries no palette." >&2
+  echo "The theme was not installed, and any existing copy of it is untouched." >&2
+  exit 1
+fi
+
+size=$(du -sh "$STAGE_PATH" 2>/dev/null | cut -f1)
+echo "Installed size: ${size:-unknown}"
+
+# Swap last: the staged clone is complete and known to be usable, so replacing
+# the old copy cannot leave the themes directory without a theme.
+if [[ -d $THEME_PATH ]]; then
+  rm -rf "$THEME_PATH"
+fi
+mv "$STAGE_PATH" "$THEME_PATH"
+
+omarchy-theme-set "$THEME_NAME"

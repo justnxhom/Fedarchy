@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# omarchy:summary=Launch a floating terminal with the Fedarchy presentation wrapper
+# omarchy:args=<command>
+
+# Export the current theme's gum styling so gum widgets match the active theme
+# even after a theme switch (the inherited environment is captured at login).
+source omarchy-restart-gum
+
+cmd="$*"
+# 130 is the user bailing with Ctrl-C; anything else gets the Done/Failed prompt.
+presentation_script="omarchy-show-logo; $cmd; code=\$?; if (( code != 130 )); then omarchy-show-done \$code; fi"
+
+if command -v kitty >/dev/null 2>&1; then
+  exec setsid kitty --app-id=org.omarchy.terminal --title=Fedarchy bash -c "$presentation_script"
+fi
+
+if command -v xdg-terminal-exec >/dev/null 2>&1; then
+  exec setsid xdg-terminal-exec --app-id=org.omarchy.terminal --title=Fedarchy -e bash -c "$presentation_script"
+fi
+
+if ! command -v foot >/dev/null 2>&1; then
+  echo "No terminal emulator is available. Install Kitty, xdg-terminal-exec, or Foot." >&2
+  exit 1
+fi
+
+exec setsid foot --app-id=org.omarchy.terminal --title=Fedarchy -e bash -c "$presentation_script"

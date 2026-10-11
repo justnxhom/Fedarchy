@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# omarchy:summary=Interactive picker to disable a COPR repository
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+enabled=$(omarchy-copr-list --enabled 2>/dev/null || true)
+if [[ -z $enabled ]]; then
+  echo "No enabled COPR repositories found."
+  exit 0
+fi
+
+if command -v gum >/dev/null 2>&1; then
+  selected=$(echo "$enabled" | gum choose --header "Select COPR to disable") || true
+else
+  selected=$(echo "$enabled" | fzf --header="Select COPR to disable") || true
+fi
+
+[[ -n $selected ]] || { echo "Cancelled."; exit 0; }
+
+# Turn the selection into the owner/name form that dnf5 copr disable takes.
+#
+# Two shapes arrive here and they are not interchangeable. The --enabled listing
+# prints dnf5's fully qualified id, colon separated:
+#
+#     copr:<host>:<owner>:<name>
+#
+# while a plain listing prints a slash separated host/owner/name. Stripping the
+# prefix and the host from the first leaves "owner:name", which contains no slash
+# at all -- so checking for a slash and passing the remainder straight through
+# fails on every repository, with the selected value echoed back as if it were
+# malformed input. The remaining colon is what has to become the slash.
+short=""
+case "$selected" in
+  copr:*)
+    rest="${selected#copr:}"
+    rest="${rest#*:}"          # drop the host, leaving owner:name
+    # Split on the first colon rather than substituting it. Escaping the delimiter
+    # inside ${var/:/...} leaves the backslash in the result, and splitting also
+    # keeps any further colons inside the project name instead of truncating it.
+    # Guarded, because with no colon left to split on, %% and # both return the
+    # whole string and the name would be duplicated into owner/name/owner/name.
+    if [[ $rest == *:* ]]; then
+      short="${rest%%:*}/${rest#*:}"
+    else
+      short="$rest"
+    fi
+    ;;
+  */*/*)
+    # host/owner/name
+    short=$(printf '%s' "$selected" | awk -F/ '{print $(NF-1)"/"$NF}')
+    ;;
+  */*)
+    # already owner/name
+    short="$selected"
+    ;;
+esac
+
+if [[ $short != */* || $short == *:* ]]; then
+  echo "Unable to parse COPR repository: $selected" >&2
+  exit 1
+fi
+
+exec omarchy-copr-disable "$short"

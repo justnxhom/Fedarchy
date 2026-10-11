@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# omarchy:summary=Check the update log for known failure conditions
+
+update_log="${OMARCHY_UPDATE_LOG:-/tmp/omarchy-update.log}"
+
+if [[ ! -f $update_log || ! -r $update_log ]]; then
+  echo -e '\e[31mError: Update log is missing or unreadable: '"$update_log"'\e[0m' >&2
+  exit 1
+fi
+
+if grep -Eiq 'dracut:.*(fatal|failed|failure|error|non-zero)|initramfs[^[:alnum:]]*(failed|failure|error)' "$update_log"; then
+  echo -e '\e[31mError: Fedora initramfs generation failed. Review logs before restart.\e[0m' >&2
+  exit 1
+fi

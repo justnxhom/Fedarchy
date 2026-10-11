@@ -1,0 +1,58 @@
+#!/bin/bash
+# Install the theme for yazi.
+#
+# Yazi reads [ui] theme from yazi.toml, naming a file in its configuration
+# directory, and falls back to theme.toml there. The generated theme is written
+# to that default path, and the key is only added to yazi.toml when the user has
+# no [ui] theme of their own -- an explicit choice is respected rather than
+# overridden on every theme change.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/yazi-theme.toml"
+CONFIG_DIR="$HOME/.config/yazi"
+CONFIG="$CONFIG_DIR/yazi.toml"
+THEME_NAME="theme.toml"
+
+[[ -f $GENERATED ]] || exit 0
+
+mkdir -p "$CONFIG_DIR"
+
+# The first time, keep whatever was there: it is hand-written until the theme
+# pipeline takes it over, and losing it silently would be the worst outcome.
+if [[ -f $CONFIG_DIR/$THEME_NAME && ! -f $CONFIG_DIR/$THEME_NAME.omarchy-backup ]]; then
+  cp "$CONFIG_DIR/$THEME_NAME" "$CONFIG_DIR/$THEME_NAME.omarchy-backup"
+fi
+# Written through a temporary file in the same directory and then renamed,
+# because a plain copy truncates the target first: anything reading it at that
+# moment -- a running yazi reading the file -- would see half a file. A rename
+# within one filesystem is atomic, so a reader sees either the old file or the
+# new one.
+install_atomically() {
+  local source="$1" target="$2" tmp
+  tmp="$(mktemp "${target}.XXXXXX")"
+  if cat "$source" >"$tmp"; then
+    chmod --reference="$target" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+    mv -f "$tmp" "$target"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+install_atomically "$GENERATED" "$CONFIG_DIR/$THEME_NAME"
+
+if [[ -f $CONFIG ]]; then
+  if ! grep -qE '^[[:space:]]*theme[[:space:]]*=' "$CONFIG"; then
+    # No [ui] theme chosen, so point yazi at the generated one. Appended inside
+    # an existing [ui] table when there is one, otherwise as its own table.
+    if grep -qE '^\[ui\]' "$CONFIG"; then
+      printf 'theme = "%s"\n' "$THEME_NAME" >>"$CONFIG"
+    else
+      printf '\n[ui]\ntheme = "%s"\n' "$THEME_NAME" >>"$CONFIG"
+    fi
+  fi
+else
+  printf '[ui]\ntheme = "%s"\n' "$THEME_NAME" >"$CONFIG"
+fi
+
+printf 'yazi theme installed: %s\n' "$CONFIG_DIR/$THEME_NAME"

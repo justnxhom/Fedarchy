@@ -1,0 +1,219 @@
+#!/bin/bash
+
+# omarchy:summary=Show or adjust brightness on the focused display.
+# omarchy:args=[--no-osd] [--monitor name] [+N%|N%-|N%|off|on]
+# omarchy:examples=omarchy brightness display | omarchy brightness display +5% | omarchy brightness display --monitor DP-1 50% | omarchy brightness display off | omarchy brightness display on
+
+no_osd=0
+monitor=""
+
+while (( $# > 0 )); do
+  case "$1" in
+  --no-osd)
+    no_osd=1
+    shift
+    ;;
+  --monitor)
+    (( $# >= 2 )) || {
+      echo "Usage: omarchy-brightness-display [--no-osd] [--monitor <name>] [+N%|N%-|N%|off|on]" >&2
+      exit 1
+    }
+    monitor="$2"
+    shift 2
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+backlight_brightness() {
+  brightnessctl -d "$1" -m 2>/dev/null | awk '
+    match($0, /[0-9]+%/) {
+      value = substr($0, RSTART, RLENGTH - 1) + 0
+      print value
+      found = 1
+      exit
+    }
+
+    END { exit !found }
+  '
+}
+
+[[ -n $monitor ]] || monitor="$(omarchy-hyprland-monitor-focused 2>/dev/null || true)"
+
+# hyprctl/jq output and hand-typed --monitor values both arrive with stray
+# whitespace. An untrimmed name is what made the prefix globs below look right
+# while every downstream comparison (the Apple probe, the DDC cache key, the
+# ddcutil connector match) silently operated on a name no device answers to.
+monitor="${monitor#"${monitor%%[![:space:]]*}"}"
+monitor="${monitor%"${monitor##*[![:space:]]}"}"
+
+# A panel connector is eDP/LVDS/DSI plus the connector number and nothing else.
+# Anchoring the number rejects the bare prefixes and the trailing-space forms
+# that the old eDP-* style globs accepted, so a whitespace-padded name is no
+# longer misrouted onto the DDC path.
+monitor_is_internal() {
+  [[ $monitor =~ ^(eDP|LVDS|DSI)-[0-9]+$ ]]
+}
+
+use_apple_display() {
+  omarchy-hyprland-monitor-focused-apple "$monitor"
+}
+
+use_ddc_display() {
+  [[ -n $monitor ]] && ! monitor_is_internal
+}
+
+# Anything that is not a plain percentage step, an absolute percentage, or a
+# named display power state is a typo or a stray argument, and passing it
+# through to the backlight tool only produces a device-specific error.
+valid_brightness_step() {
+  [[ $1 =~ ^[+-]?[0-9]{1,3}%-$|^[+-]?[0-9]{1,3}%$ ]]
+}
+
+clamp_brightness() {
+  if [[ ! $1 =~ ^[0-9]+$ ]]; then
+    echo "Refusing to show an OSD progress of '$1'" >&2
+    return 1
+  fi
+
+  (( $1 < 1 )) && { printf '1'; return 0; }
+  (( $1 > 100 )) && { printf '100'; return 0; }
+  printf '%s' "$1"
+}
+
+if (( $# == 0 )); then
+  if use_apple_display; then
+    omarchy-brightness-display-apple
+    exit
+  elif use_ddc_display; then
+    omarchy-brightness-display-ddc "$monitor"
+    exit
+  fi
+
+  device="$(omarchy-hw-display)" || exit 1
+  backlight_brightness "$device"
+  exit
+fi
+
+step="$1"
+
+if [[ $step == "off" ]]; then
+  if ! hyprctl dispatch 'hl.dsp.dpms({ action = "disable" })' >/dev/null 2>&1; then
+    echo "Could not power the display off." >&2
+    exit 1
+  fi
+  exit 0
+elif [[ $step == "on" ]]; then
+  # Skip the dispatch when every active display is already lit: a redundant
+  # DPMS enable right after system resume forces another modeset, which blanks
+  # the panel for a beat (visible flash at the unlock screen).
+  hyprctl monitors -j 2>/dev/null | jq -e '[.[] | select(.disabled == false)] | length > 0 and all(.dpmsStatus)' >/dev/null 2>&1 && exit 0
+  if ! hyprctl dispatch 'hl.dsp.dpms({ action = "enable" })' >/dev/null 2>&1; then
+    echo "Could not power the display on." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+if ! valid_brightness_step "$step"; then
+  echo "Usage: omarchy-brightness-display [--no-osd] [--monitor <name>] [+N%|N%-|N%|off|on]" >&2
+  exit 1
+fi
+
+# A single key repeat of a brightness key is one event: anything past the first
+# positional argument is a second, conflicting request and must not be applied
+# after the first one already moved the display.
+(( $# == 1 )) || {
+  echo "Usage: omarchy-brightness-display [--no-osd] [--monitor <name>] [+N%|N%-|N%|off|on]" >&2
+  exit 1
+}
+
+# Drop overlapping brightness key events so concurrent invocations do not race.
+# Hardware key repeat present on some devices can otherwise glitch OSD rendering.
+# The lock lives in a directory only this user can write: a predictable path in a
+# world-writable /tmp lets another local user pre-create or symlink the lock and
+# either stall every brightness key or redirect writes to a file of their
+# choosing. When no private directory is available the lock is skipped rather
+# than falling back to a shared path, so the worst case is a rare lost race
+# instead of a permanent denial of the feature.
+lock_dir() {
+  local dir="${XDG_RUNTIME_DIR:-}"
+
+  if [[ -z $dir ]]; then
+    [[ -n ${HOME:-} ]] || return 1
+    dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    chmod 700 "$dir" 2>/dev/null || true
+  fi
+
+  [[ -d $dir && -w $dir ]] || return 1
+  printf '%s\n' "$dir"
+}
+
+lock_path=""
+lock_dir_path="$(lock_dir 2>/dev/null || true)"
+if [[ -n $lock_dir_path && -w $lock_dir_path ]]; then
+  lock_path="$lock_dir_path/omarchy-brightness-display.lock"
+  exec {lock_fd}>"$lock_path" 2>/dev/null || lock_path=""
+fi
+
+if [[ -n $lock_path ]]; then
+  if ! flock -n "$lock_fd"; then
+    exit 0
+  fi
+  chmod 600 "$lock_path" 2>/dev/null || true
+fi
+
+if use_apple_display; then
+  if (( no_osd )); then
+    omarchy-brightness-display-apple --no-osd "$step"
+  else
+    omarchy-brightness-display-apple "$step"
+  fi
+  exit $?
+elif use_ddc_display; then
+  brightness="$(omarchy-brightness-display-ddc "$monitor" "$step")" || exit 1
+  (( no_osd )) && exit 0
+  progress="$(clamp_brightness "$brightness")" || exit 1
+  omarchy-osd -i brightness -p "$progress"
+  exit $?
+else
+  device="$(omarchy-hw-display)" || exit 1
+
+  current=$(backlight_brightness "$device") || exit 1
+
+  # Apply non-uniform step size: 1% steps if at or below 5%, otherwise set an
+  # absolute target percentage to avoid raw backlight rounding causing uneven OSD steps.
+  if [[ $step == "+5%" ]]; then
+    if (( current < 5 )); then
+      (( target = current + 1 ))
+    else
+      (( target = current + 5 ))
+    fi
+
+    target="$(clamp_brightness "$target")" || exit 1
+    step="$target%"
+  elif [[ $step == "5%-" ]]; then
+    if (( current <= 5 )); then
+      (( target = current - 1 ))
+    else
+      (( target = current - 5 ))
+    fi
+
+    target="$(clamp_brightness "$target")" || exit 1
+    step="$target%"
+  fi
+
+  if ! brightnessctl -d "$device" set "$step" >/dev/null 2>&1; then
+    echo "Could not set brightness on $device" >&2
+    exit 1
+  fi
+
+  (( no_osd )) && exit 0
+  new_brightness="$(backlight_brightness "$device")" || exit 1
+  progress="$(clamp_brightness "$new_brightness")" || exit 1
+  omarchy-osd -i brightness -p "$progress"
+  exit $?
+fi

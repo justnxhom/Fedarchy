@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# omarchy:summary=Print the active Fedarchy package channel
+
+set -euo pipefail
+
+# Dev is a linked source checkout: OMARCHY_PATH points somewhere other than
+# the package-backed install at /usr/share/omarchy. This takes precedence over
+# the package channels, since the checkout overrides whatever is installed.
+if [[ ${OMARCHY_PATH:-} != "/usr/share/omarchy" ]]; then
+  echo dev
+  exit 0
+fi
+
+# Check if the Fedarchy COPR repo is enabled
+if dnf5 repolist --enabled 2>/dev/null | grep -qi "fedarchy"; then
+  echo copr
+else
+  echo stable
+fi

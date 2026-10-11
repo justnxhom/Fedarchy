@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# omarchy:summary=Print the active Fedarchy repository channel
+
+# Check for enabled repositories that match Fedarchy channels
+if dnf5 repolist --enabled 2>/dev/null | grep -q "fedarchy-stable"; then
+  echo "stable"
+elif dnf5 repolist --enabled 2>/dev/null | grep -q "fedarchy-rc"; then
+  echo "rc"
+elif dnf5 repolist --enabled 2>/dev/null | grep -q "fedarchy-edge"; then
+  echo "edge"
+else
+  echo "unknown"
+fi

@@ -1,0 +1,216 @@
+#!/bin/bash
+
+# omarchy:summary=Show or adjust DDC/CI display brightness for a Hyprland monitor.
+# omarchy:args=<monitor> [+N%|N%-|N%]
+# omarchy:examples=omarchy-brightness-display-ddc DP-1 | omarchy-brightness-display-ddc DP-1 50%
+
+monitor="${1:-}"
+step="${2:-}"
+
+[[ -n $monitor ]] || exit 1
+(( $# <= 2 )) || {
+  echo "Usage: omarchy-brightness-display-ddc <monitor> [+N%|N%-|N%]" >&2
+  exit 1
+}
+
+# The bus cache is keyed by monitor name, so a predictable file in a
+# world-writable /tmp is both a symlink target and a poisoning target: another
+# local user could pre-create it to point this script at a bus of their choosing,
+# or pin "unavailable" for every future brightness key. Cache only under a
+# directory this user owns; with no private directory, run without caching
+# instead of sharing a guessable path.
+cache_dir=""
+if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+  [[ -d ${XDG_RUNTIME_DIR} && -w ${XDG_RUNTIME_DIR} ]] && cache_dir="${XDG_RUNTIME_DIR}/omarchy-brightness-display-ddc"
+elif [[ -n ${HOME:-} ]]; then
+  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+  if mkdir -p "$state_dir" 2>/dev/null; then
+    chmod 700 "$state_dir" 2>/dev/null || true
+    [[ -w $state_dir ]] && cache_dir="$state_dir/omarchy-brightness-display-ddc"
+  fi
+fi
+
+if [[ -n $cache_dir ]]; then
+  mkdir -p "$cache_dir" 2>/dev/null || cache_dir=""
+  [[ -n $cache_dir ]] && chmod 700 "$cache_dir" 2>/dev/null || true
+fi
+
+cache_name="${monitor//[^[:alnum:]_.-]/_}"
+cache_file=""
+[[ -n $cache_dir ]] && cache_file="$cache_dir/$cache_name.bus"
+unavailable_cache_seconds=60
+range_cache_seconds=10
+
+# No cache directory means no persistence, not a failure: every read detects
+# again and every write is a no-op.
+cache_read() {
+  [[ -n $cache_dir && -r $cache_file ]] || return 1
+  read -r "$@" <"$cache_file"
+}
+
+cache_write() {
+  [[ -n $cache_dir ]] || return 0
+  printf '%s\n' "$@" >"$cache_file" 2>/dev/null || true
+}
+
+cache_drop() {
+  [[ -n $cache_dir ]] || return 0
+  rm -f "$cache_file" 2>/dev/null || true
+}
+
+cache_unavailable() {
+  now="$(date +%s)"
+  cache_write "unavailable $now"
+}
+
+detect_bus() {
+  ddcutil --skip-ddc-checks detect --brief 2>/dev/null | awk -v monitor="$monitor" '
+    /I2C bus:/ {
+      bus = $NF
+      sub(/^.*\/i2c-/, "", bus)
+    }
+
+    /DRM connector:/ {
+      connector = $NF
+      sub(/^card[0-9]+-/, "", connector)
+      if (connector == monitor && bus != "") {
+        print bus
+        exit
+      }
+      bus = ""
+    }
+  '
+}
+
+find_bus() {
+  local bus=""
+  local cached_value=""
+  local now=0
+
+  cache_read bus cached_value || true
+
+  if [[ $bus == "unavailable" ]]; then
+    now=$(date +%s)
+    if [[ $cached_value =~ ^[0-9]+$ ]] && (( now - cached_value < unavailable_cache_seconds )); then
+      return 1
+    fi
+    bus=""
+    cache_drop
+  fi
+
+  if [[ -z $bus ]]; then
+    bus="$(detect_bus)" || return 1
+    if [[ ! $bus =~ ^[0-9]+$ ]]; then
+      cache_unavailable
+      return 1
+    fi
+    cache_write "$bus"
+  fi
+
+  printf '%s\n' "$bus"
+}
+
+read_vcp() {
+  local bus="$1"
+
+  ddcutil --bus "$bus" --skip-ddc-checks getvcp 10 --brief 2>/dev/null | awk '
+    $1 == "VCP" && toupper($2) == "10" && $3 == "C" && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $5 > 0 {
+      print $4, $5
+      found = 1
+      exit
+    }
+
+    END { exit !found }
+  '
+}
+
+read_brightness() {
+  local bus=""
+  local now=0
+  local values=""
+
+  bus="$(find_bus)" || return 1
+  values="$(read_vcp "$bus")" || {
+    cache_drop
+    return 1
+  }
+
+  now=$(date +%s)
+  cache_write "$bus" "${values##* }" "$now"
+  printf '%s %s\n' "$bus" "$values"
+}
+
+bus=""
+current=""
+maximum=""
+percent=""
+range_cached_at=""
+
+if [[ -z $step ]]; then
+  read -r bus current maximum < <(read_brightness) || exit 1
+  [[ -n ${bus:-} && -n ${current:-} && -n ${maximum:-} ]] || exit 1
+  (( maximum > 0 )) || exit 1
+  (( percent = (current * 100 + maximum / 2) / maximum ))
+  printf '%s\n' "$percent"
+  exit 0
+fi
+
+if [[ $step =~ ^([0-9]+)%$ ]]; then
+  target="${BASH_REMATCH[1]}"
+  range_cache_fresh=0
+  bus=""
+  maximum=""
+  range_cached_at=""
+  cache_read bus maximum range_cached_at || true
+
+  if [[ $bus =~ ^[0-9]+$ && $maximum =~ ^[0-9]+$ && $range_cached_at =~ ^[0-9]+$ ]] && (( maximum > 0 )); then
+    now=$(date +%s)
+    if (( range_cached_at <= now && now - range_cached_at < range_cache_seconds )); then
+      range_cache_fresh=1
+    fi
+  fi
+
+  if (( ! range_cache_fresh )); then
+    read -r bus current maximum < <(read_brightness) || exit 1
+  fi
+elif [[ $step =~ ^\+([0-9]+)%$ ]]; then
+  read -r bus current maximum < <(read_brightness) || exit 1
+  [[ -n ${bus:-} && -n ${current:-} && -n ${maximum:-} ]] || exit 1
+  (( maximum > 0 )) || exit 1
+  (( percent = (current * 100 + maximum / 2) / maximum ))
+  amount="${BASH_REMATCH[1]}"
+  if (( amount == 5 && percent < 5 )); then
+    (( target = percent + 1 ))
+  else
+    (( target = percent + amount ))
+  fi
+elif [[ $step =~ ^([0-9]+)%-$ ]]; then
+  read -r bus current maximum < <(read_brightness) || exit 1
+  [[ -n ${bus:-} && -n ${current:-} && -n ${maximum:-} ]] || exit 1
+  (( maximum > 0 )) || exit 1
+  (( percent = (current * 100 + maximum / 2) / maximum ))
+  amount="${BASH_REMATCH[1]}"
+  if (( amount == 5 && percent <= 5 )); then
+    (( target = percent - 1 ))
+  else
+    (( target = percent - amount ))
+  fi
+else
+  echo "Usage: omarchy-brightness-display-ddc <monitor> [N%|+N%|N%-]" >&2
+  exit 1
+fi
+
+[[ -n ${bus:-} && -n ${maximum:-} ]] || exit 1
+(( maximum > 0 )) || exit 1
+
+(( target < 1 )) && target=1
+(( target > 100 )) && target=100
+(( raw_target = (target * maximum + 50) / 100 ))
+
+if ! ddcutil --bus "$bus" --skip-ddc-checks --noverify setvcp 10 "$raw_target" >/dev/null 2>&1; then
+  cache_drop
+  echo "Could not set brightness on bus $bus" >&2
+  exit 1
+fi
+
+printf '%s\n' "$target"

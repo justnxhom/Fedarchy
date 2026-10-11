@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# omarchy:summary=Lock the computer and turn off the display
+# omarchy:group=system
+# omarchy:name=lock
+# omarchy:examples=omarchy system lock
+
+set -euo pipefail
+
+# The Quickshell lock screen refuses to lock without password PAM and reports
+# "missing-pam" with a zero exit status, so the result has to be inspected.
+# Falling back to hyprlock keeps the session locked either way.
+lock_result=$(omarchy-shell lock lock 2>/dev/null || true)
+
+if [[ $lock_result != "ok" ]]; then
+  if command -v hyprlock >/dev/null 2>&1; then
+    setsid hyprlock >/dev/null 2>&1 &
+    hyprlock_pid=$!
+    sleep 0.5
+
+    if kill -0 "$hyprlock_pid" 2>/dev/null; then
+      if [[ $lock_result == "missing-pam" ]]; then
+        omarchy-notification-send -g 󰌑 "Locked with hyprlock: run omarchy-apply-lock to fix the shell lock screen"
+      else
+        omarchy-notification-send -g 󰌑 "Shell lock unavailable (${lock_result:-no response}), locked with hyprlock"
+      fi
+    else
+      # A lockscreen that grabs the session and then exits leaves Hyprland
+      # showing the crashed-lockscreen overlay. Clear it instead of leaving the
+      # desktop looking stuck.
+      hyprctl eval 'hl.clear_crashed_lockscreen()' >/dev/null 2>&1 || true
+      omarchy-notification-send -g 󰌑 "Lock failed: hyprlock exited immediately (cleared any stale lockscreen)"
+      exit 1
+    fi
+  else
+    omarchy-notification-send -g 󰌑 "Cannot lock: shell lock said '${lock_result:-no response}' and hyprlock is missing"
+    exit 1
+  fi
+fi
+
+# Set keyboard layout to default (first layout)
+hyprctl switchxkblayout all 0 > /dev/null 2>&1
+
+# Ensure 1password is locked. Use timeout because `1password --lock` can
+# otherwise leave a full Electron helper tree running after each lock.
+if pgrep -x "1password" >/dev/null && omarchy-cmd-present 1password; then
+  (
+    flock -n 9 || exit 0
+    timeout --kill-after=1s 3s 1password --lock >/dev/null 2>&1 || true
+  ) 9>"${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/locks}/omarchy-1password-lock.lock" &
+fi
+
+# Avoid running screensaver when locked
+pkill -x ttfx 2>/dev/null || true
+# ttfx handles SIGTERM asynchronously, so keep its terminal alive until it exits.
+timeout 1s pidwait -x ttfx 2>/dev/null || true
+pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null || true

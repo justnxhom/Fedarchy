@@ -1,0 +1,11 @@
+#!/bin/bash
+# omarchy:summary=Copy an emoji to the system clipboard
+# omarchy:group=menu
+# omarchy:args=<emoji>
+# omarchy:hidden=true
+
+emoji="${1:-}"
+
+[[ -n $emoji ]] || exit
+
+printf '%s' "$emoji" | wl-copy --type text/plain

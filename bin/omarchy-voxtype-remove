@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# omarchy:summary=Remove Voxtype dictation and its configuration
+# omarchy:requires-sudo=true
+
+set -e
+
+# Remove voxtype and its configurations.
+
+if omarchy-cmd-present voxtype; then
+  echo "Uninstall Voxtype manually, then remove its configuration from the Remove menu action." >&2
+  exit 1
+fi
+rm -rf ~/.config/voxtype ~/.local/share/voxtype

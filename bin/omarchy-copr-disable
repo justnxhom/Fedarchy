@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# omarchy:summary=Disable a COPR repository (keeps the .repo file)
+# omarchy:args=<owner/name>
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+usage() { echo "Usage: omarchy-copr-disable <owner/name>"; }
+fail() { echo "Error: $*" >&2; exit 1; }
+
+(( $# == 1 )) || { usage; exit 1; }
+
+repo="$1"
+[[ $repo == */* ]] || fail "COPR must be in owner/name form (got: $repo)"
+
+source omarchy-sudo-keepalive 2>/dev/null || true
+omarchy-update-lock run-wait sudo dnf5 copr disable "$repo"
+echo "Disabled COPR: $repo"

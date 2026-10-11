@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# omarchy:summary=Switch between audio outputs while preserving the mute status
+
+# Skip the physical sink an active speaker tuning fronts: rotating onto it would
+# silently bypass the tuning rather than pick a different output.
+fronted=$(omarchy-audio-tuning fronted-sink 2>/dev/null || true)
+
+# A failed listing is not an empty machine. Reporting "No audio devices found"
+# there is a false OSD: it claims there is no hardware when the truth is that
+# PipeWire could not be asked.
+if ! sinks=$(timeout 2 pactl -f json list sinks 2>/dev/null) ||
+  ! sinks=$(jq --arg fronted "$fronted" '[.[]
+    | select((.ports | length == 0) or ([.ports[]? | .availability != "not available"] | any))
+    | select($fronted == "" or .name != $fronted)]' <<<"$sinks" 2>/dev/null); then
+  echo "Could not list the available audio outputs." >&2
+  exit 1
+fi
+
+sinks_count=$(jq 'length' <<<"$sinks")
+
+if (( sinks_count == 0 )); then
+  omarchy-osd -m "No audio devices found"
+  exit 1
+fi
+
+if ! current_sink_name=$(timeout 2 pactl get-default-sink 2>/dev/null) || [[ -z $current_sink_name ]]; then
+  echo "Could not read the current audio output." >&2
+  exit 1
+fi
+current_sink_index=$(jq -r --arg name "$current_sink_name" 'map(.name) | index($name)' <<<"$sinks")
+
+if [[ $current_sink_index != "null" ]]; then
+  next_sink_index=$(((current_sink_index + 1) % sinks_count))
+else
+  next_sink_index=0
+fi
+
+next_sink=$(jq -c ".[$next_sink_index]" <<<"$sinks")
+next_sink_name=$(jq -r '.name' <<<"$next_sink")
+next_sink_description=$(jq -r '.description // .properties."device.description" // .name' <<<"$next_sink")
+
+if [[ -z $next_sink_name || $next_sink_name == "null" ]]; then
+  echo "Could not resolve the next audio output." >&2
+  exit 1
+fi
+
+# A tuning sink sits at a fixed 100% and unmuted while real loudness lives on the
+# physical sink beneath it, so read the level from whichever sink actually carries
+# it or the OSD contradicts the volume keys. An unresolved effective sink would
+# silently fall back to the DSP sink's own 100% and claim a level nothing is
+# playing at, so treat it as a hard failure.
+next_sink_effective=$(omarchy-audio-output-sink "$next_sink_name" 2>/dev/null || true)
+if [[ -z $next_sink_effective ]]; then
+  echo "Could not resolve the sink that carries the volume of $next_sink_name." >&2
+  exit 1
+fi
+
+next_sink_volume=$(timeout 2 pactl get-sink-volume "$next_sink_effective" 2>/dev/null |
+  awk 'NR == 1 {for (i = 1; i <= NF; i++) if ($i ~ /%$/) {sub("%", "", $i); print $i; exit}}')
+if [[ ! $next_sink_volume =~ ^[0-9]+$ ]]; then
+  next_sink_volume=$(jq -r '.volume | to_entries[0].value.value_percent | sub("%"; "") | tonumber' <<<"$next_sink" 2>/dev/null)
+fi
+if [[ ! $next_sink_volume =~ ^[0-9]+$ ]]; then
+  echo "Could not read the volume of $next_sink_name." >&2
+  exit 1
+fi
+(( next_sink_volume > 100 )) && next_sink_volume=100
+
+if [[ $(timeout 2 pactl get-sink-mute "$next_sink_effective" 2>/dev/null) == *yes ]]; then
+  next_sink_is_muted=true
+else
+  next_sink_is_muted=false
+fi
+
+if [[ $next_sink_is_muted == "true" ]] || (( next_sink_volume == 0 )); then
+  icon_state="muted"
+elif (( next_sink_volume <= 33 )); then
+  icon_state="low"
+elif (( next_sink_volume <= 66 )); then
+  icon_state="medium"
+else
+  icon_state="high"
+fi
+
+if [[ $next_sink_name != $current_sink_name ]]; then
+  if ! omarchy-audio-output-set-default "$(jq -r '.index' <<<"$next_sink")" "$next_sink_name"; then
+    echo "Could not switch the audio output to $next_sink_name." >&2
+    exit 1
+  fi
+fi
+
+omarchy-osd -i "volume-${icon_state}" -m "$next_sink_description"
+exit $?

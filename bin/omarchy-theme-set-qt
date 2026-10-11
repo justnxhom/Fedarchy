@@ -1,0 +1,300 @@
+#!/bin/bash
+# Install the theme for Qt applications.
+#
+# Qt applications running under the qt5ct / qt6ct platform theme read a colour
+# scheme from a file named in ~/.config/qt5ct/qt5ct.conf, as
+# `color_scheme_path`. That file points at this one, so applying the theme is a
+# matter of writing the scheme to the path the toolkit is already pointed at --
+# no configuration is rewritten, and the two Qt major versions share it.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/qt-colors.conf"
+SCHEME_DIR="$HOME/.local/share/color-schemes"
+ENV_DIR="$HOME/.config/environment.d"
+TARGET="$SCHEME_DIR/Fedarchy.colors"
+
+[[ -f $GENERATED ]] || exit 0
+
+# The scheme only takes effect if Qt applications load it through the qt5ct /
+# qt6ct platform theme, which is selected by this variable. It is written to
+# environment.d rather than only exported, so it survives a re-login: a variable
+# that exists solely in the running session's environment is forgotten at the
+# next one, and every Qt application quietly reverts to the default palette while
+# the scheme file still looks correct on disk.
+ENV_FILE="$ENV_DIR/50-fedarchy-qt.conf"
+if [[ ! -f $ENV_FILE ]] || ! grep -q 'QT_QPA_PLATFORMTHEME' "$ENV_FILE"; then
+  mkdir -p "$ENV_DIR"
+  printf 'QT_QPA_PLATFORMTHEME=qt5ct:qt6ct\n' >"$ENV_FILE"
+fi
+
+# Also hand it to the user systemd manager now, so applications already running
+# or launched before the next login pick it up without one. Best-effort: there is
+# no user session to talk to during a build or a test run, and a theme switch
+# should not fail over it.
+if [[ ${OMARCHY_THEME_HEADLESS:-0} != 1 ]]; then
+  QT_QPA_PLATFORMTHEME=qt5ct:qt6ct systemctl --user import-environment QT_QPA_PLATFORMTHEME 2>/dev/null || true
+fi
+
+# Point the toolkit at the scheme. A missing configuration is created: the
+# platform theme is selected unconditionally above, and pointing it at a scheme
+# that no configuration names is the same as not theming qt at all -- which is
+# what happens on a machine where qt5ct has been installed but never configured.
+# An existing path is never overwritten, though: a user who chose a different
+# scheme file has done so deliberately.
+for config in "$HOME/.config/qt5ct/qt5ct.conf" "$HOME/.config/qt6ct/qt6ct.conf"; do
+  [[ -f $config ]] || mkdir -p "$(dirname "$config")"
+  grep -q '^[[:space:]]*color_scheme_path=' "$config" 2>/dev/null && continue
+
+  if [[ -f $config ]] && grep -q '^\[' "$config"; then
+    printf '\n[General]\ncolor_scheme_path=%s\n' "$TARGET" >>"$config"
+  else
+    printf '[General]\ncolor_scheme_path=%s\n' "$TARGET" >"$config"
+  fi
+done
+
+mkdir -p "$SCHEME_DIR"
+
+# The first time, keep whatever was there: a hand-written scheme is the user's own
+# work, and losing it silently would be the worst outcome.
+if [[ -f $TARGET && ! -f $TARGET.omarchy-backup ]]; then
+  cp "$TARGET" "$TARGET.omarchy-backup"
+fi
+
+# Written through a temporary file in the same directory and then renamed, because
+# a plain copy truncates the target first and Qt reads it while starting up. A
+# rename within one filesystem is atomic, so a reader sees either the old file or
+# the new one.
+# Cleared before writing, so a run interrupted between creating a temporary file
+# and renaming it does not leave one behind. The name is the target plus six
+# random characters, which nothing else in the directory uses.
+rm -f "${TARGET}".??????
+tmp="$(mktemp "${TARGET}.XXXXXX")"
+if cat "$GENERATED" >"$tmp"; then
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$TARGET"
+else
+  rm -f "$tmp"
+  exit 1
+fi
+
+printf 'qt theme installed: %s\n' "$TARGET"
+
+# --- KSyntaxHighlighting: the editor's code view ------------------------------
+#
+# This is what actually themes the surface code is written on. KWrite, Kate and
+# Konsole all read a colour theme from
+# ~/.local/share/org.kde.syntax-highlighting/themes, and every theme shipped with
+# the system carries a fixed background of its own -- a dark one stays black
+# whatever the desktop is doing. So the window follows the theme and the editor
+# does not, and nothing reports a problem, because the colour theme was applied
+# successfully.
+#
+# The kwriterc keys for the editor background cannot compensate: the syntax theme
+# takes precedence for it. Hence a generated theme per palette, carrying both the
+# canvas and the token colours.
+#
+# Written under a fixed name rather than one per Omarchy theme, and the "name" in
+# the file's metadata -- not the filename -- is what appears in KWrite's list, so
+# switching themes rewrites one file and the entry never multiplies.
+#
+# The template is pure JSON with no header comment: this file is parsed as JSON, so
+# a leading '#' is a syntax error rather than a comment, and a theme that fails to
+# parse is ignored without a word. The template is a generated file, so the
+# explanation lives here rather than in it.
+KSYNTAX_SRC="$THEME_DIR/ksyntax-theme.json"
+KSYNTAX_DIR="$HOME/.local/share/org.kde.syntax-highlighting/themes"
+KSYNTAX_TARGET="$KSYNTAX_DIR/fedarchy.theme"
+
+if [[ -f $KSYNTAX_SRC ]]; then
+  mkdir -p "$KSYNTAX_DIR"
+  rm -f "${KSYNTAX_TARGET}".??????
+  tmp="$(mktemp "${KSYNTAX_TARGET}.XXXXXX")"
+  if cat "$KSYNTAX_SRC" >"$tmp"; then
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$KSYNTAX_TARGET"
+    printf 'editor colour theme installed: %s\n' "$KSYNTAX_TARGET"
+  else
+    rm -f "$tmp"
+  fi
+fi
+
+# --- the global Qt/KDE platform style -----------------------------------------
+#
+# The widget style is not a per-application setting and is not in kwriterc at all:
+# every Qt application takes it from kdeglobals, so KWrite, Dolphin, Konsole and
+# Okular all follow whatever is written there. With no WidgetStyle key present at
+# all they fall back to Breeze, which is what KWrite then reports -- a style
+# paired with a dark palette reads as "Breeze Dark" in the list.
+#
+# Written rather than omitted on purpose. Absent means "whatever the default
+# happens to be", and the default is not something a theme switch controls.
+#
+# The colour scheme is set in both places kdeglobals records it, because it holds
+# two keys that disagree: [General] ColorScheme and [KDE] colorScheme. Left
+# disagreeing, which one wins depends on the Qt version, so the desktop can end up
+# with a scheme that matches nothing. It is harmless while QT_QPA_PLATFORMTHEME
+# sends Qt to qt5ct instead -- and only harmless, because that redirect can be
+# absent in any session started before the variable was set.
+KDEGLOBALS="$HOME/.config/kdeglobals"
+
+# --- KWrite's own theme selection --------------------------------------------
+#
+# Applied only where the file already exists. Creating a kwriterc would write a
+# configuration for an application that is not installed, and a future install
+# would then adopt these values instead of its own.
+KWCRITERC="$HOME/.config/kwriterc"
+
+mode=dark
+if [[ -f $THEME_DIR/colors.toml ]]; then
+  mode=$(omarchy-theme-color --file "$THEME_DIR/colors.toml" mode)
+fi
+
+if [[ -f $THEME_DIR/ksyntax-theme.json ]]; then
+  SYNTAX_THEME="Fedarchy"
+else
+  # No generated syntax theme, so there is nothing for the colour theme to point
+  # at. Left alone, the editor keeps whatever it had.
+  SYNTAX_THEME=""
+fi
+
+# Replace one key inside one named section, adding the section if it is absent and
+# the key if it is not already there.
+#
+# Scoping to the section matters here: several sections share one flat file, and a
+# plain "replace the key anywhere" would let one section's key overwrite another's.
+#
+# A missing key has to be inserted rather than skipped. The obvious version of this
+# -- replace if found, otherwise do nothing -- looks correct and fails quietly the
+# first time a key is new: the file already has the section but not the key, so
+# nothing is written, nothing is reported, and the colour never appears.
+set_section_key() {
+  local file=$1 section=$2 key=$3 value=$4 tmp
+  rm -f "${file}".??????
+  tmp="$(mktemp "${file}.XXXXXX")"
+
+  if grep -qE "^[[:space:]]*\[${section}\][[:space:]]*$" "$file"; then
+    # Writes the key where it stands if it is already there, and at the end of its
+    # own section if it is not -- never after a later section has started, which
+    # would put it in the wrong group.
+    awk -v section="$section" -v key="$key" -v value="$value" '
+      BEGIN { in_section = 0; done = 0 }
+      function emit() { if (in_section && !done) { print key "=" value; done = 1 } }
+      $0 ~ "^[[:space:]]*\\[" section "\\][[:space:]]*$" { emit(); in_section = 1; print; next }
+      /^[[:space:]]*\[/ { emit(); in_section = 0; print; next }
+      in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+        if (!done) { print key "=" value; done = 1 }
+        next
+      }
+      { print }
+      END { emit() }
+    ' "$file" >"$tmp"
+  else
+    cat "$file" >"$tmp"
+    # A newline first, or the header would be glued onto a last line with no
+    # trailing newline and commented out.
+    if [[ $(tail -c 1 "$tmp" | wc -l) -eq 0 ]]; then
+      printf '\n' >>"$tmp"
+    fi
+    printf '[%s]\n%s=%s\n' "$section" "$key" "$value" >>"$tmp"
+  fi
+
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  mv -f "$tmp" "$file"
+}
+
+if [[ -f $KWCRITERC ]]; then
+  set_section_key "$KWCRITERC" "KDE" "widgetStyle" "Breeze"
+  set_section_key "$KWCRITERC" "KTextEditor Renderer" "Auto Color Theme Selection" "false"
+  if [[ -n $SYNTAX_THEME ]]; then
+    set_section_key "$KWCRITERC" "KTextEditor Renderer" "Color Theme" "$SYNTAX_THEME"
+  fi
+  set_section_key "$KWCRITERC" "UiSettings" "ColorScheme" "Fedarchy"
+fi
+
+# The editing area, which the syntax theme above does not follow.
+#
+# `Color Theme` picks a KSyntaxHighlighting theme, and every one of those carries
+# its own fixed background: a dark one stays black whatever the desktop is doing.
+# So the editor keeps a black canvas inside an otherwise correctly themed window --
+# the chrome, the menus and the palette all follow, and the one surface the text is
+# actually written on does not. Nothing reports it, because the syntax theme was
+# applied successfully.
+#
+# These keys are the view's own colours, which take precedence over whatever the
+# syntax theme supplies for the same roles. The background and the text therefore
+# come from the theme, while token colours still come from the syntax theme -- a
+# dark theme's tokens on this theme's background, which is the combination that
+# stays readable. Re-theming the tokens themselves would mean shipping a
+# KSyntaxHighlighting theme per palette.
+if [[ -f $THEME_DIR/colors.toml ]]; then
+  COLORS_ARGS=(--file "$THEME_DIR/colors.toml")
+else
+  COLORS_ARGS=()
+fi
+palette() {
+  omarchy-theme-color "${COLORS_ARGS[@]}" "$1" "$2"
+}
+
+# Blend two hex colours, the second weighted by the given percentage. Used for the
+# current-line highlight, which wants to be visible without competing with a
+# selection.
+mix_hex() {
+  python3 -c '
+import sys
+# The percentage is divided here rather than at the call site: passing 45 and
+# reading it as a fraction gives components of roughly 900, which print as three
+# hex digits each and produce a nine-character colour.
+a, b = sys.argv[1].lstrip("#"), sys.argv[2].lstrip("#")
+amount = float(sys.argv[3]) / 100.0
+out = []
+for i in (0, 2, 4):
+    ca, cb = int(a[i:i + 2], 16), int(b[i:i + 2], 16)
+    out.append(max(0, min(255, round(ca * (1 - amount) + cb * amount))))
+print("#%02x%02x%02x" % tuple(out))
+' "$1" "$2" "$3"
+}
+
+editor_background=$(palette background "#282828")
+editor_foreground=$(palette foreground "#d4be98")
+editor_selection=$(palette selection "#504945")
+editor_muted=$(palette muted "#665c54")
+editor_accent=$(palette accent "#7daea3")
+editor_lighter=$(palette lighter_background "#3c3836")
+editor_orange=$(palette orange "#e1875c")
+editor_red=$(palette red "#ea6962")
+editor_yellow=$(palette yellow "#d8a657")
+
+# A shade off the background, for the current-line highlight. A palette key would
+# be either invisible or as strong as a selection.
+editor_current_line=$(mix_hex "$editor_background" "$editor_lighter" 45)
+
+if [[ -f $KWCRITERC ]]; then
+  set_section_key "$KWCRITERC" "BackgroundColors" "BackgroundColor" "$editor_background"
+  set_section_key "$KWCRITERC" "BackgroundColors" "Current Line" "$editor_current_line"
+  set_section_key "$KWCRITERC" "ForegroundColors" "ForegroundColor" "$editor_foreground"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Selection" "$editor_selection"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Line Numbers" "$editor_muted"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Current Line Number" "$editor_accent"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Bookmark" "$editor_orange"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Error" "$editor_red"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Search Highlight" "$editor_yellow"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Tab Bar" "$editor_lighter"
+  set_section_key "$KWCRITERC" "ForegroundColors" "Separator" "$editor_muted"
+fi
+
+printf 'kwrite theme installed: %s\n' "$KWCRITERC"
+
+# The global platform style, which is what actually decides the look of every Qt
+# application. Breeze is the KDE default and the reason it is written out is that
+# absent is not the same as chosen: with no key at all the value is whatever the
+# toolkit defaults to, which no theme switch can influence.
+if [[ -f $KDEGLOBALS ]]; then
+  set_section_key "$KDEGLOBALS" "KDE" "WidgetStyle" "Breeze"
+  # Both keys, so they stop disagreeing. They are separate keys differing only in
+  # case, and which one is read varies, so leaving one stale is how a desktop ends
+  # up with a colour scheme named after something else entirely.
+  set_section_key "$KDEGLOBALS" "General" "ColorScheme" "Fedarchy"
+  set_section_key "$KDEGLOBALS" "KDE" "colorScheme" "Fedarchy"
+  printf 'kde platform style set: %s\n' "$KDEGLOBALS"
+fi

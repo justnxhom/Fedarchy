@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "local.fedarchy-test",
+  "name": "Fedarchy Integration Test",
+  "version": "1.0.0",
+  "description": "Deterministic local bar widget and service used for integration testing.",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "entryPoints": {
+    "barWidget": "TestWidget.qml",
+    "service": "TestService.qml"
+  },
+  "barWidget": {
+    "displayName": "Fedarchy Test",
+    "description": "Deterministic integration test widget.",
+    "category": "Test",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

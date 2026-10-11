@@ -1,0 +1,111 @@
+#!/bin/bash
+# Install the theme for Kaizen, the anime terminal.
+#
+# Kaizen is configured by ~/.config/kaizen/config.yaml, and the theme reaches it
+# by updating the colour values already in that file. Unlike every other step
+# here, this one does not write a generated file over a target: kaizen's config
+# also holds settings that have nothing to do with colour, it is short, and it is
+# edited by hand. Rewriting it wholesale would be a good way to lose a setting.
+#
+# So the generated payload is a map of key paths to colours, and this applies it
+# in place. Two rules, both of them the point of this step:
+#
+#   Only keys that already exist are changed. A key in the map that kaizen's
+#   config does not have is skipped, never added. Kaizen would ignore an invented
+#   entry, so adding one would make the config look themed while nothing changed,
+#   and would bury the settings that matter.
+#
+#   Everything else is left byte for byte: comments, ordering, indentation, the
+#   non-colour settings, and the inconsistent spacing kaizen's file already has.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/kaizen.yaml"
+CONFIG="$HOME/.config/kaizen/config.yaml"
+
+[[ -f $GENERATED && -f $CONFIG ]] || exit 0
+
+# Reads the generated map and rewrites only the matching values. Kept as a small
+# script rather than sed because the replacement is conditional on the full
+# nesting path: `light` and `dark` each appear three times in kaizen's config,
+# under three different parents, and a text substitution cannot tell them apart.
+python3 - "$GENERATED" "$CONFIG" <<'PYTHON'
+import re
+import sys
+
+generated_path, config_path = sys.argv[1], sys.argv[2]
+
+palette = {}
+with open(generated_path, encoding="utf-8") as handle:
+    for line in handle:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        palette[key.strip()] = value.strip().strip('"')
+
+with open(config_path, encoding="utf-8") as handle:
+    lines = handle.readlines()
+
+# Each line's dotted path, rebuilt from the indentation. A key is pushed with the
+# indent it sits at, and everything at that indent or deeper belongs to it, so
+# `spinner.msg.color` and `spinner.color` stay distinct despite being siblings
+# under a differently indented parent.
+entry = re.compile(r"^(\s*)([^:#]+?):(\s*)(.*?)(\r?\n?)$")
+stack = []  # (indent, key)
+changed = 0
+skipped = []
+
+for index, line in enumerate(lines):
+    match = entry.match(line)
+    if not match:
+        continue
+
+    indent, key, gap, value, ending = match.groups()
+    column = len(indent)
+
+    while stack and stack[-1][0] >= column:
+        stack.pop()
+
+    path = ".".join([item[1] for item in stack] + [key])
+
+    if not value.strip():
+        # A key with no value of its own: a parent, or a section whose children
+        # follow. It still has to be tracked so its children resolve.
+        stack.append((column, key))
+        continue
+
+    stack.append((column, key))
+
+    if path in palette:
+        replacement = palette[path]
+        # The quoting is load-bearing and has to follow the original. In YAML a `#`
+        # that starts a scalar is a comment, so an unquoted `#d8dee9` is not a
+        # colour at all -- it parses as null, and kaizen falls back to whatever it
+        # does for a missing colour. A config written with quoted hex therefore has
+        # to keep it quoted, and one written unquoted stays unquoted.
+        stripped = value.strip()
+        if stripped[:1] in ('"', "'") and stripped[-1:] == stripped[:1]:
+            replacement = f"{stripped[0]}{replacement}{stripped[0]}"
+        if stripped.strip('"').strip("'") != palette[path]:
+            lines[index] = f"{indent}{key}:{gap or ' '}{replacement}{ending}"
+            changed += 1
+    else:
+        skipped.append(path)
+
+with open(config_path, "w", encoding="utf-8") as handle:
+    handle.writelines(lines)
+
+unknown = [item for item in skipped if item.split(".")[0] in palette]
+if unknown:
+    # Reported rather than applied: the payload knows a colour for a key this
+    # config does not have, which usually means kaizen renamed something.
+    print(
+        "  note - not in kaizen's config, not added: " + ", ".join(sorted(set(unknown))),
+        file=sys.stderr,
+    )
+
+print(f"kaizen colours updated: {changed} value(s)")
+PYTHON

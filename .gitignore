@@ -1,0 +1,109 @@
+# Fedarchy — Git ignore rules
+#
+# Scope: this file excludes only genuinely local, generated, or developer-
+# specific material. It deliberately does NOT exclude source, shell scripts,
+# tests, configuration templates, themes, or runtime resources.
+#
+# Notably absent: any blanket "*.tar.gz" rule. Fedarchy does not ship
+# distributable archives today, but excluding them by extension would risk
+# hiding a legitimate future release asset. Backup archives are excluded by
+# their specific directory names below instead.
+
+# ---------------------------------------------------------------------------
+# Python bytecode and caches
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Test and coverage output
+# ---------------------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+junit*.xml
+test-results/
+
+# ---------------------------------------------------------------------------
+# Logs, scratch, and temporary output
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+*.pid
+.cache/
+tmp/
+scratch/
+
+# ---------------------------------------------------------------------------
+# Editor and OS artifacts
+# ---------------------------------------------------------------------------
+*~
+*.swp
+*.swo
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-*
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------------------------------------------------------------------------
+# Local secrets and environment files
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.netrc
+.npmrc
+.git-credentials
+credentials.json
+secrets.json
+
+# ---------------------------------------------------------------------------
+# Local backup snapshots and scratch archives (NOT the project's source).
+# Backups live outside the tree by policy (~/Fedarchy-backups/); these rules
+# are a safety net in case one is ever created inside it.
+# ---------------------------------------------------------------------------
+Fedarchy-backups/
+*-backups/
+backup/
+backups/
+*.tar.gz.orig
+
+# ---------------------------------------------------------------------------
+# Developer-local debris
+#
+# shell/plugins/.panels/ holds a manual backup of a removed panel plugin
+# (cava) and is referenced by no code. Excluded as local scratch.
+# ---------------------------------------------------------------------------
+shell/plugins/.panels/
+
+# ---------------------------------------------------------------------------
+# OS-level Git metadata that must never be committed
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+._*
+.Spotlight-V100
+.Trashes

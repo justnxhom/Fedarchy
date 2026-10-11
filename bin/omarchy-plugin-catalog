@@ -1,0 +1,81 @@
+#!/bin/bash
+set -euo pipefail
+
+paths=()
+first_party_dir="${OMARCHY_PATH:+$OMARCHY_PATH/shell/plugins}"
+if [[ -n $first_party_dir && -d $first_party_dir && ! -L $first_party_dir ]]; then
+  while IFS= read -r manifest; do
+    paths+=("$manifest")
+  done < <(find "$first_party_dir" -mindepth 2 -maxdepth 4 -type f \( -name manifest.json -o -name '*.manifest.json' \) | sort)
+fi
+
+user_dir="$HOME/.config/omarchy/plugins"
+if [[ -d $user_dir && ! -L $user_dir ]]; then
+  for plugin_dir in "$user_dir"/*; do
+    [[ -d $plugin_dir && ! -L $plugin_dir ]] || continue
+    manifest="$plugin_dir/manifest.json"
+    [[ -f $manifest && ! -L $manifest ]] || continue
+    [[ -z "$(find "$plugin_dir" -path "$plugin_dir/.git" -prune -o -type l -print -quit 2>/dev/null)" ]] || continue
+    paths+=("$manifest")
+  done
+fi
+
+records=()
+for manifest in "${paths[@]}"; do
+  first_party=false
+  [[ $manifest == "$first_party_dir"/* ]] && first_party=true
+  jq -e --arg firstParty "$first_party" '
+    . as $manifest |
+    .schemaVersion == 1
+    and (.id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") and (contains("..") | not))
+    and (if $firstParty == "true" then true else (.id | startswith("omarchy.") | not) end)
+    and (.name | type == "string" and test("[^[:space:]]"))
+    and (.version | type == "string" and test("[^[:space:]]"))
+    and (.kinds | type == "array" and length > 0)
+    and (.kinds | all(.[]; type == "string" and IN("bar", "bar-widget", "menu", "overlay", "panel", "service")))
+    and (.kinds | length == (unique | length))
+    and (.entryPoints | type == "object")
+    and (.entryPoints | to_entries | all(.[]; (.key | IN("bar", "barWidget", "menu", "overlay", "panel", "service")) and (.value | type == "string" and (startswith("/") | not) and (contains("..") | not) and (contains("\\") | not))))
+    and ([$manifest.kinds[] as $kind | {"bar":"bar", "bar-widget":"barWidget", "menu":"menu", "overlay":"overlay", "panel":"panel", "service":"service"}[$kind]] | all(.[]; . as $entry | . != null and ($manifest.entryPoints | has($entry))))
+    and (if (.kinds | index("bar-widget")) != null then (.barWidget | type == "object") and (.barWidget.displayName | type == "string" and test("[^[:space:]]")) and (.barWidget.description | type == "string" and test("[^[:space:]]")) and (.barWidget.category | type == "string" and test("[^[:space:]]")) and (.barWidget.allowMultiple | type == "boolean") else true end)
+    and (if has("description") then (.description | type == "string" and test("[^[:space:]]")) else true end)
+  ' "$manifest" >/dev/null 2>&1 || continue
+  valid=true
+  source_dir=$(dirname -- "$manifest")
+  source_real=$(realpath -e -- "$source_dir" 2>/dev/null || true)
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    entry_real=$(realpath -m -- "$source_dir/$entry" 2>/dev/null || true)
+    [[ -n $source_real && $entry_real == "$source_real"/* && -f $source_dir/$entry && ! -L $source_dir/$entry ]] || { valid=false; break; }
+  done < <(jq -r '.entryPoints[]' "$manifest" 2>/dev/null)
+  [[ $valid == true ]] || continue
+  record=$(jq -c --arg manifestPath "$manifest" --arg firstParty "$first_party" '
+    ($manifestPath | sub("/manifest.json$"; "") | sub("/[^/]+\\.manifest\\.json$"; "")) as $sourceDir
+    | {
+        id: (.id // ""),
+        name: (.name // .id // ""),
+        description: (.description // ""),
+        kinds: (.kinds // []),
+        firstParty: ($firstParty == "true"),
+        manifestPath: $manifestPath,
+        sourceDir: $sourceDir,
+        entryPoints: (.entryPoints // {}),
+        barWidget: (.barWidget // null),
+        bar: (.bar // null)
+      }
+    | .barWidgetPath = (if (.entryPoints.barWidget // null) != null then (.sourceDir + "/" + .entryPoints.barWidget) else null end)
+    | .barPath = (if (.entryPoints.bar // null) != null then (.sourceDir + "/" + .entryPoints.bar) else null end)
+    | select(.id != "")
+  ' "$manifest" 2>/dev/null) || continue
+  records+=("$record")
+done
+
+if (( ${#records[@]} == 0 )); then
+  echo "[]"
+  exit 0
+fi
+
+printf '%s\n' "${records[@]}" | jq -s '
+  reduce .[] as $row ([]; if any(.[]; .id == $row.id) then . else . + [$row] end)
+  | sort_by([if .firstParty then 0 else 1 end, .id, .manifestPath])
+'

@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# omarchy:summary=Check whether Fedarchy updates are available.
+
+set -euo pipefail
+
+updates=()
+
+if [[ ${OMARCHY_PATH:-} != "/usr/share/omarchy" && -n ${OMARCHY_PATH:-} ]]; then
+  upstream=$(git -C "$OMARCHY_PATH" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  if [[ -n $upstream ]]; then
+    GIT_TERMINAL_PROMPT=0 timeout 10 git -C "$OMARCHY_PATH" fetch --quiet 2>/dev/null || true
+
+    behind=$(git -C "$OMARCHY_PATH" rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
+    if (( behind > 0 )); then
+      commit_label=commits
+      (( behind == 1 )) && commit_label=commit
+      updates+=("omarchy-dev-checkout $behind new $commit_label on $upstream")
+    fi
+  fi
+fi
+
+# Use DNF5's machine-readable JSON output for package updates
+dnf5_output=$(dnf5 check-upgrade --json 2>/dev/null || true)
+
+# Parse JSON to find available updates
+if [[ -n $dnf5_output ]]; then
+  while IFS= read -r line; do
+    pkg_name=$(echo "$line" | jq -r '.name // empty' 2>/dev/null || true)
+    if [[ -n $pkg_name ]]; then
+      updates+=("$line")
+    fi
+  done < <(echo "$dnf5_output" | jq -c '.updates[]?' 2>/dev/null || true)
+fi
+
+if (( ${#updates[@]} > 0 )); then
+  printf '%s\n' "${updates[@]}"
+  exit 0
+else
+  echo "Fedarchy is up to date"
+  exit 1
+fi

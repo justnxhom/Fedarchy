@@ -1,0 +1,188 @@
+#!/bin/bash
+
+# omarchy:summary=Install a supported browser
+# omarchy:args=<chromium|chrome|brave|brave-origin|edge|firefox|zen>
+# omarchy:examples=omarchy install browser chromium | omarchy install browser firefox
+
+set -euo pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+
+as_root() {
+  if (( EUID == 0 )); then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+setup_chromium_policy_directory() {
+  as_root install -d -m 0755 "$1"
+}
+
+# Where Firefox reads its enterprise policy from. Not a fixed path: on Fedora
+# /usr/lib and /usr/lib64 are separate directories rather than one being a
+# symlink to the other, and Firefox is installed under only one of them. The
+# hardcoded /usr/lib/firefox/distribution therefore created a directory Firefox
+# never reads, and the policies it installed there had no effect at all. The
+# directory that actually exists wins; failing both, the one beside the browser
+# binary, which is where it has to be for Firefox to find it.
+firefox_distribution_dir() {
+  local candidate resolved
+
+  for candidate in /usr/lib64/firefox/distribution /usr/lib/firefox/distribution; do
+    if [[ -d $candidate ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  resolved=$(readlink -f "$(command -v firefox 2>/dev/null || true)")
+  if [[ -n $resolved ]]; then
+    printf '%s' "$(dirname "$resolved")/distribution"
+    return 0
+  fi
+
+  printf '%s' /usr/lib64/firefox/distribution
+}
+
+setup_firefox_policy() {
+  local policy_source="$OMARCHY_PATH/default/firefox/policies.json"
+  local policy_dir
+  local policy_file
+  local backup
+
+  policy_dir=$(firefox_distribution_dir)
+  policy_file="$policy_dir/policies.json"
+
+  [[ -f $policy_source ]] || {
+    echo "Firefox policy file not found: $policy_source" >&2
+    return 1
+  }
+
+  if [[ -f $policy_file ]]; then
+    backup="$policy_file.bak.$(date +%s)"
+    while [[ -e $backup ]]; do
+      backup="${backup}-$(date +%s%N)"
+    done
+    as_root cp -a "$policy_file" "$backup"
+  fi
+  as_root install -d -m 0755 "$policy_dir"
+  as_root install -m 0644 "$policy_source" "$policy_file"
+}
+
+announce_browser_installed() {
+  echo ""
+  echo "$1 browser installed. Make it the default via Setup > Defaults > Browser."
+}
+
+copy_chromium_flags() {
+  mkdir -p ~/.config
+  cp -f "$OMARCHY_PATH/config/chromium-flags.conf" "$1"
+  omarchy-install-chromium-copy-url
+  omarchy-install-chromium-ytdlp
+}
+
+setup_firefox_wayland() {
+  mkdir -p ~/.config/environment.d
+  echo "MOZ_ENABLE_WAYLAND=1" > ~/.config/environment.d/omarchy-firefox-wayland.conf
+}
+
+case ${1:-} in
+chromium)
+  echo "Installing Chromium..."
+  omarchy-pkg-add chromium
+
+  setup_chromium_policy_directory /etc/chromium/policies/managed
+  copy_chromium_flags ~/.config/chromium-flags.conf
+  omarchy-theme-set-browser
+  announce_browser_installed "Chromium"
+  ;;
+chrome)
+  echo "Installing Chrome..."
+  if ! rpm -q google-chrome-stable &>/dev/null; then
+    sudo rpm --import https://dl.google.com/linux/linux_signing_key.pub
+    cat <<'REPO' | sudo tee /etc/yum.repos.d/google-chrome.repo >/dev/null
+[google-chrome]
+name=google-chrome
+baseurl=https://dl.google.com/linux/chrome/rpm/stable/x86_64
+enabled=1
+gpgcheck=1
+gpgkey=https://dl.google.com/linux/linux_signing_key.pub
+REPO
+    sudo dnf5 install -y google-chrome-stable
+  fi
+
+  setup_chromium_policy_directory /etc/opt/chrome/policies/managed
+  copy_chromium_flags ~/.config/chrome-flags.conf
+  omarchy-theme-set-browser
+  announce_browser_installed "Chrome"
+  ;;
+edge)
+  echo "Installing Edge..."
+  if ! rpm -q microsoft-edge-stable &>/dev/null; then
+    sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+    cat <<'REPO' | sudo tee /etc/yum.repos.d/microsoft-edge.repo >/dev/null
+[microsoft-edge]
+name=microsoft-edge
+baseurl=https://packages.microsoft.com/yumrepos/edge/
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+REPO
+    sudo dnf5 install -y microsoft-edge-stable
+  fi
+
+  setup_chromium_policy_directory /etc/opt/edge/policies/managed
+  copy_chromium_flags ~/.config/microsoft-edge-stable-flags.conf
+  omarchy-theme-set-browser
+  announce_browser_installed "Edge"
+  ;;
+brave)
+  echo "Installing Brave..."
+  if ! rpm -q brave-browser &>/dev/null; then
+    sudo dnf5 copr enable -y @nickvdp/brave-browser
+    sudo dnf5 install -y brave-browser
+  fi
+
+  setup_chromium_policy_directory /etc/brave/policies/managed
+  copy_chromium_flags ~/.config/brave-flags.conf
+  omarchy-theme-set-browser
+  announce_browser_installed "Brave"
+  ;;
+brave-origin)
+  echo "Installing Brave Origin..."
+  if ! rpm -q brave-browser &>/dev/null; then
+    sudo dnf5 copr enable -y @nickvdp/brave-browser
+    sudo dnf5 install -y brave-browser
+  fi
+
+  setup_chromium_policy_directory /etc/brave/policies/managed
+  copy_chromium_flags ~/.config/brave-origin-flags.conf
+  omarchy-theme-set-browser
+  announce_browser_installed "Brave Origin"
+  ;;
+firefox)
+  echo "Installing Firefox..."
+  omarchy-pkg-add firefox || exit 1
+
+  setup_firefox_policy
+  setup_firefox_wayland
+  announce_browser_installed "Firefox"
+  ;;
+zen)
+  echo "Installing Zen..."
+  if ! flatpak list --app --columns=application 2>/dev/null | grep -q io.github.nickvision.zen; then
+    flatpak install -y flathub io.github.nickvision.zen || {
+      echo "Zen browser Flatpak install failed. You can install it manually from https://zen-browser.app"
+      exit 1
+    }
+  fi
+
+  announce_browser_installed "Zen"
+  ;;
+*)
+  echo "Usage: omarchy-install-browser <chromium|chrome|brave|brave-origin|edge|firefox|zen>"
+  exit 1
+  ;;
+esac

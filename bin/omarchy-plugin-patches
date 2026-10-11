@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# omarchy:summary=Reapply Fedora compatibility patches to installed plugins
+# omarchy:group=plugin
+# omarchy:hidden=true
+
+# A plugin fetched from git carries whatever its author wrote, which on Fedora
+# can be wrong: this one asks cava for a pipewire input that Fedora's cava is
+# not built with, so the widget loads and then sits frozen at zero. Patches live
+# in the project (default/omarchy/plugin-patches/<plugin-id>/) so they are
+# version-controlled and reapplied after every add or update. Each write keeps a
+# timestamped backup of what it replaced.
+
+set -euo pipefail
+
+PATCHES_DIR="${OMARCHY_PATH:-$HOME/Fedarchy}/default/omarchy/plugin-patches"
+PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+
+[[ -d $PATCHES_DIR ]] || exit 0
+[[ -d $PLUGINS_DIR ]] || exit 0
+
+backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugin-patches"
+applied=0
+skipped=0
+
+for plugin_dir in "$PATCHES_DIR"/*/; do
+  plugin_id=$(basename "$plugin_dir")
+  target_dir="$PLUGINS_DIR/$plugin_id"
+  [[ -d $target_dir ]] || continue
+
+  while IFS= read -r patched; do
+    relative=${patched#"$plugin_dir"}
+    target="$target_dir/$relative"
+
+    if [[ -f $target ]] && cmp -s "$patched" "$target"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    mkdir -p "$(dirname "$target")"
+    if [[ -f $target ]]; then
+      mkdir -p "$backup_dir/$plugin_id"
+      stamp=$(date -u +%Y%m%d%H%M%S)
+      backup="$backup_dir/$plugin_id/${relative//\//__}.$stamp"
+      cp "$target" "$backup"
+    fi
+
+    cp "$patched" "$target"
+    echo "  patched $plugin_id/$relative"
+    applied=$((applied + 1))
+  done < <(find "$plugin_dir" -type f | sort)
+done
+
+if (( applied > 0 )); then
+  echo "Applied $applied plugin patch(es). Backups: $backup_dir"
+elif (( skipped > 0 )); then
+  echo "Plugin patches already current ($skipped file(s))."
+fi

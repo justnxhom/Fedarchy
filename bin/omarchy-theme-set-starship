@@ -1,0 +1,40 @@
+#!/bin/bash
+# Install the theme for the shell prompt.
+#
+# Starship reads a single toml file and has no include directive and no key that
+# names another file, so the whole file is generated from the palette and
+# written over the user's. Every comment in it is the template's, so the
+# reasoning behind the colours lives in one place rather than being edited away
+# on the first theme switch.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+GENERATED="$THEME_DIR/starship.toml"
+CONFIG="$HOME/.config/starship.toml"
+
+[[ -f $GENERATED ]] || exit 0
+
+mkdir -p "$HOME/.config"
+
+# The first time, keep whatever was there: it is hand-written until the theme
+# pipeline takes it over, and losing it silently would be the worst outcome.
+if [[ -f $CONFIG && ! -f $CONFIG.omarchy-backup ]]; then
+  cp "$CONFIG" "$CONFIG.omarchy-backup"
+fi
+
+# Written through a temporary file in the same directory and then renamed,
+# because a plain copy truncates the target first: every new shell reads this
+# file at startup, and one that starts mid-write gets a parse error and falls
+# back to a bare prompt. A rename within one filesystem is atomic, so a reader
+# sees either the old file or the new one.
+rm -f "${CONFIG}".??????
+tmp="$(mktemp "${CONFIG}.XXXXXX")"
+if cat "$GENERATED" >"$tmp"; then
+  chmod --reference="$CONFIG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  mv -f "$tmp" "$CONFIG"
+else
+  rm -f "$tmp"
+  exit 1
+fi
+
+printf 'starship theme installed: %s\n' "$CONFIG"

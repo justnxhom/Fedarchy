@@ -1,0 +1,11 @@
+{
+    "bar": {
+        "position": "top",
+        "layout": ["workspaces", "clock"]
+    },
+    "idle": {
+        "lock": 300,
+        "dim": 180
+    },
+    "disabled": []
+}

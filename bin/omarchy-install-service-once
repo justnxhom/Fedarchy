@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# omarchy:summary=Install the ONCE service, enable its background service, and launch the TUI.
+# omarchy:requires-sudo=true
+
+set -e
+
+echo "Installing ONCE..."
+if ! rpm -q once &>/dev/null; then
+  sudo dnf5 copr enable -y @nickvdp/once
+  sudo dnf5 install -y once
+fi
+
+echo "Enabling ONCE background service..."
+sudo systemctl enable --now once-background.service
+
+echo -e "\nLaunching ONCE..."
+sudo once

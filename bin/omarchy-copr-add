@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# omarchy:summary=Enable a COPR repository (owner/name)
+# omarchy:args=<owner/name>
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: omarchy-copr-add <owner/name>"
+  echo "Example: omarchy-copr-add atim/starship"
+}
+
+fail() { echo "Error: $*" >&2; exit 1; }
+
+(( $# == 1 )) || { usage; exit 1; }
+
+repo="$1"
+[[ $repo == */* ]] || fail "COPR must be in owner/name form (got: $repo)"
+[[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "Invalid COPR name: $repo"
+
+# COPR project slugs are always lowercase; dnf5 rejects mixed case.
+repo=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+
+if dnf5 repolist --enabled 2>/dev/null | grep -qF "copr:"; then
+  if dnf5 repolist --enabled 2>/dev/null | grep -qiF "$repo"; then
+    echo "COPR $repo is already enabled."
+    exit 0
+  fi
+fi
+
+source omarchy-sudo-keepalive 2>/dev/null || true
+omarchy-update-lock run-wait sudo dnf5 copr enable -y "$repo"
+echo "Enabled COPR: $repo"

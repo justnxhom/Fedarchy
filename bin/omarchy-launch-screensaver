@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Retired: the terminal screensaver no longer runs.
+#
+# This exists only because the shell's idle service still calls it:
+#
+#   shell/plugins/services/idle/Service.qml
+#     runProcess(screensaverProcess, "screensaver",
+#                "[[ $(omarchy-shell lock isLocked) == \"true\" ]] || omarchy-launch-screensaver")
+#
+# Deleting this file outright would not disable the screensaver, it would break it
+# in a worse way: the idle timer would still fire, and every cycle would spawn a
+# command that is not there. That fails silently, repeatedly, and forever.
+#
+# So the call site is satisfied by a stub that does nothing and says nothing.
+#
+# Disabling the trigger in configuration instead is not an option, and the reason
+# is worth writing down. `idle.screensaver` is parsed by
+#
+#   secondsFromConfig(value, fallback)  ->  !isFinite(n) || n < 0 ? fallback : n
+#
+# so 0 parses as 0, and with idle.lock at 300 the derived first timeout is
+# min(0, 300) = 0. Zero therefore means "fire immediately", not "never" -- setting
+# idle.screensaver to 0 to turn this off would make it appear instantly.
+#
+# Note also that the menu entries which used to launch this by hand are gone, so
+# there is no longer a way to start it from the interface either. To bring the
+# screensaver back it needs the animation binary it draws with (ttfx), which is not
+# present on this system, and the templates under default/*/screensaver* -- both
+# are kept in the backup taken at removal time.
+set -euo pipefail
+
+exit 0

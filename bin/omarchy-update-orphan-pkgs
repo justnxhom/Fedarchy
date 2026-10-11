@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# omarchy:summary=Review and optionally remove orphaned system packages after updates
+# omarchy:requires-sudo=true
+
+set -e
+
+# DNF5 autoremove handles orphan detection and removal automatically
+# `--assumeno` answers the prompt itself, so this is a read-only listing.
+# The exit status is deliberately ignored: dnf5 exits non-zero both for a failed
+# query and for a declined removal, so it cannot tell the two apart. What must
+# not happen is a failed query being reported as a list of orphans, so the error
+# text is checked separately, the same way "Nothing to do" is.
+orphans=$(dnf5 autoremove --assumeno 2>&1 || true)
+
+# Check if there are actually packages to remove
+if echo "$orphans" | grep -q "Nothing to do"; then
+  exit 0
+fi
+
+# A failed query says nothing about orphans. Report it as the failure it is
+# instead of offering to remove packages the listing never described.
+if echo "$orphans" | grep -qE "^Error:|Failed to (download|sync)|Errors during downloading"; then
+  printf '%s\n' "$orphans" >&2
+  echo "Could not check for orphaned packages; leaving them untouched." >&2
+  exit 1
+fi
+
+echo -e "\e[32m\nOrphan system packages\e[0m"
+echo "$orphans"
+echo
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  echo "Orphaned packages found. Re-run omarchy-update-orphan-pkgs in a terminal to review/remove them."
+  echo
+  exit 0
+fi
+
+if ! gum confirm --default=false "Remove orphaned packages?"; then
+  echo "Keeping orphaned packages."
+  echo
+  exit 0
+fi
+
+echo -e "\e[32m\nRemoving orphan system packages\e[0m"
+sudo dnf5 autoremove -y
+echo

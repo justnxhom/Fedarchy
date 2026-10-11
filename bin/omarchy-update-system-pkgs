@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# omarchy:summary=Update system packages with DNF5
+# omarchy:requires-sudo=true
+
+set -e
+
+echo -e "\e[32m\nUpdate system packages\e[0m"
+
+# Layer any pre-refresh customizations (custom repos, etc.) before DNF runs.
+omarchy-hook pre-refresh-dnf
+
+# DNF5 handles package replacements as follows:
+# - It uses --allowerasing for package replacements
+# - It resolves conflicts automatically where possible
+# - It prompts for user input on unresolvable conflicts
+omarchy-update-dnf upgrade --refresh --allowerasing -y

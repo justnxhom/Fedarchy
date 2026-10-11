@@ -1,0 +1,102 @@
+#!/bin/bash
+
+# omarchy:summary=Launch a URL as a web app in the default supported browser
+# omarchy:args=<url>
+
+set -euo pipefail
+
+usage() { echo "Usage: omarchy-launch-webapp <url>" >&2; exit 1; }
+fail() { echo "Error: $*" >&2; exit 1; }
+
+(( $# >= 1 )) || usage
+url="$1"
+shift
+
+[[ $url =~ ^(https?|file):// ]] || fail "not a URL: $url"
+
+# Resolve the browser the user actually set, rather than assuming a name.
+#
+# This used to match the default against a list of Chromium-family desktop files
+# and fall back to chromium.desktop for anything else. Firefox's desktop entry is
+# named after its reverse-DNS id rather than after the program -- on this machine
+# org.mozilla.firefox.desktop -- so it never matched, every URL was forced to
+# chromium.desktop, and that file does not exist here. The Exec line was then read
+# out of a file that was not there, leaving an empty command, and the launch
+# became `setsid --app=<url>`: setsid rejected its own argument as an unknown
+# option and the window never opened. Nothing was reported, so every link in the
+# menu looked simply dead.
+#
+# So: read whatever xdg-settings reports, find that entry, and take the program
+# out of its Exec line. App mode is only requested from a browser known to accept
+# it; for anything else the URL is opened normally, which is better than refusing.
+browser=""
+desktop_id="$(xdg-settings get default-web-browser 2>/dev/null || true)"
+
+if [[ -n $desktop_id ]]; then
+  for dir in "${XDG_DATA_HOME:-$HOME/.local/share}/applications" /usr/local/share/applications /usr/share/applications; do
+    entry="$dir/$desktop_id"
+    [[ -f $entry ]] || continue
+    # The first Exec action is the program. Field codes (%u, %U, %f, %F, %s...)
+    # and any leading %-prefixed action are dropped rather than being handed to
+    # the shell, and a desktop entry may legitimately name the program with a
+    # path or with arguments alongside it.
+    exec_line=$(awk -F= '/^Exec=/ { sub(/^Exec=/, "", $0); print; exit }' "$entry")
+    [[ -n $exec_line ]] || continue
+    for token in $exec_line; do
+      [[ $token == %* ]] && continue
+      browser="$token"
+      break
+    done
+    break
+  done
+fi
+
+# A desktop entry may name the program as a bare name or as a path, and they need
+# different checks. `[[ -x firefox ]]` asks the shell about a file called "firefox"
+# in the current directory, which is false for a perfectly good command on PATH --
+# so a bare name is resolved through PATH instead of being taken as a missing file.
+if [[ -z $browser ]]; then
+  browser=""
+elif [[ $browser == */* ]]; then
+  [[ -x $browser ]] || browser=""
+else
+  browser="$(command -v -- "$browser" 2>/dev/null || true)"
+fi
+
+if [[ -z $browser ]]; then
+  # xdg-open is the honest last resort: it uses the same desktop entry, so it
+  # opens the browser the user chose even though this script cannot name it.
+  exec xdg-open "$url"
+fi
+
+# Where the URL goes depends on whether the browser is already open: a tab in the
+# window that exists, or a window of its own when there is none.
+#
+# `--app` is deliberately not used, and its absence is the fix. It requests a
+# chromeless application window, which Firefox opens *even when one is already
+# running* -- so every link in the Learn section arrived as its own separate
+# window rather than as a tab, and the existing window was left untouched. That
+# read as the link not working, because what appeared was a window with no
+# history, no tabs and no toolbar rather than the page in the browser you were
+# already using.
+#
+# Firefox is given --new-tab explicitly when an instance is up. Passing a bare URL
+# already reuses a running instance, but Firefox can be configured to open links
+# in a new window instead, and the behaviour wanted here should not depend on that
+# preference. Chromium and the other families open a URL in a tab by default, so
+# they need nothing.
+browser_running() {
+  local name="$1"
+  if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl clients -j 2>/dev/null |
+      jq -e --arg n "$name" 'any(.[]; (.class // "") | test($n; "i"))' >/dev/null 2>&1 &&
+      return 0
+  fi
+  pgrep -f -- "$name" >/dev/null 2>&1
+}
+
+if [[ $(basename -- "$browser") == *firefox* ]] && browser_running firefox; then
+  exec setsid "$browser" --new-tab "$url" "$@"
+fi
+
+exec setsid "$browser" "$url" "$@"

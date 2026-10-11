@@ -1,0 +1,3 @@
+shell/Ui/OpticalGlyph.qml.bak
+shell/plugins/.panels/cava.bak.20260925182541/BarWidget.qml
+shell/plugins/.panels/cava.bak.20260925182541/manifest.json

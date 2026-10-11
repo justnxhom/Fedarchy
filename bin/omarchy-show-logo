@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Display the Omarchy logo in the terminal using green color.
+
+clear
+printf '\033[32m\n'
+if [[ -r ${OMARCHY_PATH:-}/logo.txt ]]; then
+  command cat "${OMARCHY_PATH}/logo.txt"
+else
+  printf 'Fedarchy\n'
+fi
+printf '\033[0m\n\n'

@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# omarchy:summary=Show a fuzzy-finder TUI for picking new Fedora packages to install.
+# omarchy:requires-sudo=true
+
+set -o pipefail
+
+fzf_args=(
+  --multi
+  --preview 'dnf5 info {1} 2>/dev/null || rpm -qi {1} 2>/dev/null'
+  --preview-label='alt-p: toggle description, alt-j/k: scroll, tab: multi-select'
+  --preview-label-pos='bottom'
+  --preview-window 'down:65%:wrap'
+  --bind 'alt-p:toggle-preview'
+  --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
+  --bind 'alt-k:preview-up,alt-j:preview-down'
+  --color 'pointer:green,marker:green'
+)
+
+if ! pkg_list=$(dnf5 repoquery --qf '%{name}\n' --available 2>/dev/null | sort -u); then
+  echo "Package query failed." >&2
+  exit 1
+fi
+
+if [[ -z $pkg_list ]]; then
+  echo "No packages found."
+  exit 0
+fi
+
+if ! pkg_names=$(printf '%s\n' "$pkg_list" | fzf "${fzf_args[@]}"); then
+  echo "Package selection cancelled."
+  exit 130
+fi
+
+if [[ -z $pkg_names ]]; then
+  echo "Package selection cancelled."
+  exit 130
+fi
+
+source omarchy-sudo-keepalive
+
+if omarchy-update-lock held; then
+  if printf '%s\n' "$pkg_names" | tr '\n' ' ' | xargs sudo dnf5 install -y; then
+    omarchy-show-done 0
+  else
+    status=$?
+    echo "Package installation failed." >&2
+    exit "$status"
+  fi
+else
+  if printf '%s\n' "$pkg_names" | tr '\n' ' ' | xargs omarchy-update-lock run-wait sudo dnf5 install -y; then
+    omarchy-show-done 0
+  else
+    status=$?
+    echo "Package installation failed." >&2
+    exit "$status"
+  fi
+fi

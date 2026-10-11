@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# omarchy:summary=Launch a Kitty window with the Fedarchy presentation wrapper
+# omarchy:args=<command>
+
+set -euo pipefail
+
+source omarchy-restart-gum
+
+cmd="$*"
+presentation_script="omarchy-show-logo; $cmd; code=\$?; if (( code != 130 )); then omarchy-show-done \$code; fi"
+
+if ! command -v kitty >/dev/null 2>&1; then
+  echo "Kitty is required for this action." >&2
+  exit 1
+fi
+
+exec setsid kitty --app-id=org.omarchy.terminal --title=Fedarchy bash -c "$presentation_script"

@@ -1,0 +1,5 @@
+default/fonts/omarchy/hermes.svg
+default/fonts/omarchy/omarchy.ttf
+shell/plugins/agents/assets/claude.svg
+shell/plugins/agents/assets/codex-light.svg
+shell/plugins/agents/assets/codex.svg

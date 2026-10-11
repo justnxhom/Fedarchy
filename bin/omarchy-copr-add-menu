@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# omarchy:summary=Search copr.fedorainfracloud.org and enable a COPR repository
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+ask() {
+  local prompt="$1" placeholder="$2" value=""
+
+  if command -v gum >/dev/null 2>&1; then
+    value=$(gum input --prompt "$prompt" --placeholder "$placeholder" || true)
+  else
+    read -rp "$prompt" value || true
+  fi
+
+  printf '%s' "$value"
+}
+
+choose() {
+  local header="$1" selected=""
+
+  if command -v gum >/dev/null 2>&1; then
+    selected=$(gum choose --header "$header" 2>/dev/null || true)
+  else
+    selected=$(fzf --header="$header" || true)
+  fi
+
+  printf '%s' "$selected"
+}
+
+is_copr_id() { [[ $1 =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; }
+
+term=$(ask "Search COPR repositories: " "starship, hyprland, lazygit")
+term="${term#"${term%%[![:space:]]*}"}"
+term="${term%"${term##*[![:space:]]}"}"
+if [[ -z $term ]]; then
+  echo "Cancelled."
+  exit 0
+fi
+
+selected=""
+
+if is_copr_id "$term"; then
+  selected="$term"
+else
+  # Keep only owner/name hits so the "no matches" notice is not selectable.
+  results=$(omarchy-copr-search "$term" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || true)
+  if [[ -z $results ]]; then
+    echo "No COPR projects matched: $term"
+  else
+    selected=$(printf '%s\n' "$results" | choose "COPR matches for \"$term\" (esc to type owner/name)")
+  fi
+fi
+
+if [[ -z $selected ]]; then
+  selected=$(ask "COPR owner/name: " "atim/starship")
+  if [[ -n $selected ]] && ! is_copr_id "$selected"; then
+    echo "Invalid COPR name: $selected (expected owner/name)" >&2
+    exit 1
+  fi
+fi
+
+[[ -n $selected ]] || { echo "Cancelled."; exit 0; }
+exec omarchy-copr-add "$selected"

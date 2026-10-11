@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# omarchy:summary=Interactive picker to remove a COPR repository
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+all=$(omarchy-copr-list 2>/dev/null || true)
+if [[ -z $all ]]; then
+  echo "No COPR repositories found."
+  exit 0
+fi
+
+if command -v gum >/dev/null 2>&1; then
+  selected=$(echo "$all" | gum choose --header "Select COPR to remove") || true
+else
+  selected=$(echo "$all" | fzf --header="Select COPR to remove") || true
+fi
+
+[[ -n $selected ]] || { echo "Cancelled."; exit 0; }
+
+# dnf5 copr list prints: copr.fedorainfracloud.org/owner/name (optional (disabled))
+line=$selected
+line=${line% (disabled)}
+# Convert host/owner/name -> owner/name when it looks like a full COPR id
+if [[ $line == copr.fedorainfracloud.org/* ]]; then
+  line=${line#copr.fedorainfracloud.org/}
+elif [[ $line == *"/"*"/"* ]]; then
+  # host/owner/name form
+  owner=$(echo "$line" | awk -F/ '{print $(NF-1)}')
+  name=$(echo "$line" | awk -F/ '{print $NF}')
+  line="$owner/$name"
+fi
+
+exec omarchy-copr-remove "$line"

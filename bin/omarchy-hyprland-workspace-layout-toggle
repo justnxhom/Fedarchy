@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# omarchy:summary=Cycle the active workspace through dwindle, master and scrolling
+
+set -euo pipefail
+
+LAYOUTS=(dwindle master scrolling)
+
+ACTIVE_WORKSPACE=$(hyprctl activeworkspace -j | jq -r '.id')
+[[ $ACTIVE_WORKSPACE =~ ^-?[0-9]+$ ]] || exit 1
+CURRENT_LAYOUT=$(hyprctl workspaces -j | jq -r --argjson id "$ACTIVE_WORKSPACE" '.[] | select(.id == $id) | .tiledLayout')
+
+next=""
+for (( i = 0; i < ${#LAYOUTS[@]}; i++ )); do
+  if [[ ${LAYOUTS[$i]} == "$CURRENT_LAYOUT" ]]; then
+    next=${LAYOUTS[$(((i + 1) % ${#LAYOUTS[@]}))]}
+    break
+  fi
+done
+
+# Unknown current layout (a custom or layout-plugin name): start the cycle over.
+[[ -n $next ]] || next=${LAYOUTS[0]}
+
+exec omarchy-hyprland-workspace-layout "$next"

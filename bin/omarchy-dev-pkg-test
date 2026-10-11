@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# omarchy:summary=Build and install an Omarchy package from a local checkout
+# omarchy:group=dev
+# omarchy:args=[package-name] [path-to-checkout]
+
+set -euo pipefail
+
+cat >&2 <<'EOF'
+omarchy-dev-pkg-test is not available on Fedora.
+
+This tool was Arch-specific: it built packages with makepkg/PKGBUILD and
+Fedarchy uses DNF5/RPM instead.
+
+On Fedora, build packages with rpmbuild or use the COPR workflow:
+  - Source RPMs:  rpmbuild -ba <spec>
+  - Publish:      copr-cli build <project> <srpm>
+  - Local install: sudo dnf5 install ./path/to/package.rpm
+
+See ~/Omarchy-fedora-ref/omarchy-fedora/fedora/rpm/ for Fedarchy's RPM specs.
+EOF
+exit 1

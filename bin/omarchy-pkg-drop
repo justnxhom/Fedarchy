@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# omarchy:summary=Remove all the named packages from the system if they're installed (otherwise ignore).
+# omarchy:args=<packages...>
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+(( $# > 0 )) || {
+  echo "Usage: omarchy-pkg-drop <packages...>" >&2
+  exit 1
+}
+
+if ! omarchy-update-lock held; then
+  exec omarchy-update-lock run-wait "$0" "$@"
+fi
+
+installed=()
+declare -A installed_exact=()
+declare -A selected=()
+
+installed_packages=$(rpm -qa --qf '%{NAME}\n')
+while IFS= read -r package_name; do
+  [[ -n $package_name ]] || continue
+  installed_exact[$package_name]=1
+done <<<"$installed_packages"
+
+for pkg in "$@"; do
+  if [[ -n ${installed_exact[$pkg]:-} && -z ${selected[$pkg]:-} ]]; then
+    installed+=("$pkg")
+    selected[$pkg]=1
+  fi
+done
+
+if (( ${#installed[@]} > 0 )); then
+  sudo dnf5 remove -y "${installed[@]}"
+fi

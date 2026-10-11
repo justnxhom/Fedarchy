@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# omarchy:summary=List COPR repositories configured on this system
+# omarchy:args=[--enabled|--disabled]
+
+set -euo pipefail
+
+case "${1:-}" in
+  --enabled)
+    dnf5 repolist --enabled 2>/dev/null | awk 'NR>1 && $1 ~ /^copr:/ {print $1}'
+    ;;
+  --disabled)
+    dnf5 copr list 2>/dev/null | grep '(disabled)' || true
+    ;;
+  "")
+    dnf5 copr list 2>/dev/null || true
+    ;;
+  *)
+    echo "Usage: omarchy-copr-list [--enabled|--disabled]" >&2
+    exit 1
+    ;;
+esac

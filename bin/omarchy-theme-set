@@ -1,0 +1,607 @@
+#!/bin/bash
+
+# omarchy:summary=Apply an Omarchy theme
+# omarchy:args=<theme-name>
+# omarchy:examples=omarchy theme list | omarchy theme set "Tokyo Night"
+
+export OMARCHY_PATH="${OMARCHY_PATH:-$HOME/Fedarchy}"
+
+if [[ -z $1 ]]; then
+  echo "Usage: omarchy-theme-set <theme-name>"
+  exit 1
+fi
+
+CURRENT_THEME_PATH="$HOME/.local/state/omarchy/current/theme"
+NEXT_THEME_PATH="$HOME/.local/state/omarchy/current/next-theme"
+THEME_ROLLBACK_PATH="$HOME/.local/state/omarchy/current/theme.rollback.$$"
+CURRENT_BACKGROUND_LINK="$HOME/.local/state/omarchy/current/background"
+BACKGROUND_TRANSITION_CACHE="$HOME/.cache/omarchy/background-transitions"
+THEME_SET_LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-theme-set.lock"
+USER_THEMES_PATH="$HOME/.config/omarchy/themes"
+OMARCHY_THEMES_PATH="$OMARCHY_PATH/themes"
+
+# What a theme installed from a git repo is allowed to contribute: its palette
+# and its media. Nothing else.
+#
+# This is an allow list on purpose. A deny list kept missing what real repos
+# ship -- a theme from a stranger arrives with hyprland.conf, warp.yaml,
+# zed.json, settings.json and its own CSS, and the apply steps write some of
+# that straight into the user's real configuration: omarchy-theme-set-vscode
+# merges a theme's settings.json into ~/.config/Code/User/settings.json, and
+# the claude and pi steps copy the theme's json over the agent's settings. A
+# stranger's repo has no business editing those, and several of the files are
+# code rather than colour -- .lua is loaded by Hyprland and Neovim at startup,
+# a terminal config names the program it launches, and fish config is a script.
+#
+# A theme the user wrote themselves, and Omarchy's own bundled themes, are
+# unaffected: they are staged whole, as before.
+#
+# Adding a payload a repo theme may carry means adding it here, and only if the
+# apply steps read it. tests/theme-staging-test.sh covers both directions: a
+# payload a step reads but this list drops, and a config file that reaches the
+# staged theme.
+INSTALLED_THEME_ALLOWED_NAMES=(colors.toml shell.toml icons.theme chromium.theme)
+# Visual stylesheets, and the images and clips a theme or an icon set is made of.
+INSTALLED_THEME_ALLOWED_EXTENSIONS=(css scss png jpg jpeg webp avif gif svg mp4 webm mov mkv m4v)
+IGNORED_THEME_FILES=()
+
+run_parallel() {
+  local pid command index
+  local pids=()
+  local commands=()
+  local status=0
+
+  for command in "$@"; do
+    bash -lc "$command" &
+    pids+=("$!")
+    commands+=("$command")
+  done
+
+  for index in "${!pids[@]}"; do
+    pid="${pids[$index]}"
+    if ! wait "$pid"; then
+      post_hook_failures+=("${commands[$index]}")
+      status=1
+    fi
+  done
+
+  return "$status"
+}
+
+shell_ipc() {
+  timeout 2 omarchy-shell "$@" >/dev/null 2>&1
+}
+
+is_video_path() {
+  [[ ${1,,} =~ \.(mp4|m4v|mov|webm|mkv|avi)$ ]]
+}
+
+snapshot_background_path() {
+  local background="$1"
+  local name="$2"
+  local snapshot extension
+
+  [[ -f $background ]] || return
+  is_video_path "$background" && return
+
+  mkdir -p "$BACKGROUND_TRANSITION_CACHE"
+  extension=${background##*.}
+  snapshot="$BACKGROUND_TRANSITION_CACHE/$name-$$.$extension"
+  ln "$background" "$snapshot" 2>/dev/null || cp "$background" "$snapshot"
+  echo "$snapshot"
+}
+
+snapshot_current_background() {
+  local current_background
+
+  current_background=$(readlink -f "$CURRENT_BACKGROUND_LINK" 2>/dev/null || true)
+  snapshot_background_path "$current_background" "previous"
+}
+
+background_transition_uses_snapshots() {
+  local next_background="$1"
+  local current_background
+
+  current_background=$(readlink -f "$CURRENT_BACKGROUND_LINK" 2>/dev/null || true)
+  ! is_video_path "$current_background" && ! is_video_path "$next_background"
+}
+
+choose_theme_background() {
+  local theme_path="${1:-$CURRENT_THEME_PATH}"
+  local current_theme_backgrounds="$CURRENT_THEME_PATH/backgrounds"
+  local backgrounds=()
+  local current_background index next_index i
+
+  CHOSEN_THEME_BACKGROUND=""
+  mapfile -d '' -t backgrounds < <(
+    find -L "$HOME/.config/omarchy/backgrounds/$THEME_NAME/" "$theme_path/backgrounds/" -maxdepth 1 -type f \
+      \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' \
+         -o -iname '*.mp4' -o -iname '*.m4v' -o -iname '*.mov' -o -iname '*.webm' -o -iname '*.mkv' -o -iname '*.avi' \) \
+      -print0 2>/dev/null | sort -z
+  )
+
+  (( ${#backgrounds[@]} > 0 )) || return 1
+
+  current_background=$(readlink "$CURRENT_BACKGROUND_LINK" 2>/dev/null || true)
+  if [[ $theme_path != $CURRENT_THEME_PATH && ${current_background%/*} == $current_theme_backgrounds ]]; then
+    current_background="$theme_path/backgrounds/${current_background##*/}"
+  fi
+
+  index=-1
+  for i in "${!backgrounds[@]}"; do
+    if [[ ${backgrounds[$i]} == $current_background ]]; then
+      index=$i
+      break
+    fi
+  done
+
+  if (( index == -1 )); then
+    CHOSEN_THEME_BACKGROUND="${backgrounds[0]}"
+  else
+    next_index=$(((index + 1) % ${#backgrounds[@]}))
+    CHOSEN_THEME_BACKGROUND="${backgrounds[$next_index]}"
+  fi
+}
+
+choose_staged_theme_background() {
+  local next_theme_backgrounds="$NEXT_THEME_PATH/backgrounds"
+
+  choose_theme_background "$NEXT_THEME_PATH" || return 1
+
+  if [[ ${CHOSEN_THEME_BACKGROUND%/*} == $next_theme_backgrounds ]]; then
+    CHOSEN_THEME_BACKGROUND="$CURRENT_THEME_PATH/backgrounds/${CHOSEN_THEME_BACKGROUND##*/}"
+  fi
+}
+
+set_theme_background_link() {
+  choose_theme_background || return 1
+  ln -nsf "$CHOSEN_THEME_BACKGROUND" "$CURRENT_BACKGROUND_LINK" || return 1
+  [[ -f $CURRENT_BACKGROUND_LINK ]]
+}
+
+set_theme_background() {
+  local new_background new_background_snapshot
+
+  if [[ -z $CHOSEN_THEME_BACKGROUND || ! -f $CHOSEN_THEME_BACKGROUND ]]; then
+    if ! choose_theme_background; then
+      omarchy-notification-send "No background was found for theme" -t 2000
+      rm -f "$CURRENT_BACKGROUND_LINK" || return 1
+      shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
+      return 0
+    fi
+  fi
+
+  new_background="$CHOSEN_THEME_BACKGROUND"
+  new_background_snapshot=""
+  if [[ $BACKGROUND_TRANSITION_SNAPSHOTS == "true" ]]; then
+    new_background_snapshot=$(snapshot_background_path "$new_background" "next")
+  fi
+
+  if [[ -f $OLD_BACKGROUND_SNAPSHOT && -f $new_background_snapshot ]]; then
+    shell_ipc background themeTransition "$OLD_BACKGROUND_SNAPSHOT" "$new_background_snapshot" "$new_background" "$colors_payload" "$shell_payload" || \
+      shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
+    (sleep 3; rm -f "$OLD_BACKGROUND_SNAPSHOT" "$new_background_snapshot") >/dev/null 2>&1 &
+  elif [[ -f $new_background_snapshot ]]; then
+    shell_ipc background themeTransition "" "$new_background_snapshot" "$new_background" "$colors_payload" "$shell_payload" || \
+      shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
+    (sleep 3; rm -f "$new_background_snapshot") >/dev/null 2>&1 &
+  else
+    shell_ipc background themeTransition "$OLD_BACKGROUND_SNAPSHOT" "$new_background" "$new_background" "$colors_payload" "$shell_payload" || \
+      shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
+    if [[ -f $OLD_BACKGROUND_SNAPSHOT ]]; then
+      (sleep 3; rm -f "$OLD_BACKGROUND_SNAPSHOT") >/dev/null 2>&1 &
+    fi
+  fi
+
+  if ! ln -nsf "$new_background" "$CURRENT_BACKGROUND_LINK"; then
+    return 1
+  fi
+  [[ -f $CURRENT_BACKGROUND_LINK ]]
+}
+
+# Is this one file a payload a repo theme may contribute? Compared case
+# insensitively so a repo cannot slip a config past the list by capitalising it.
+is_allowed_installed_file() {
+  local name="${1,,}"
+  local allowed
+
+  for allowed in "${INSTALLED_THEME_ALLOWED_NAMES[@]}"; do
+    [[ $name == "$allowed" ]] && return 0
+  done
+
+  for allowed in "${INSTALLED_THEME_ALLOWED_EXTENSIONS[@]}"; do
+    [[ $name == *".$allowed" ]] && return 0
+  done
+
+  return 1
+}
+
+# Docs are expected in a repo and say nothing about how it was applied, so they
+# are dropped without cluttering the report with every README.
+note_ignored_installed_file() {
+  local name="${1,,}"
+
+  case "$name" in
+    readme* | license* | changelog* | *.md | *.txt) return 0 ;;
+  esac
+
+  IGNORED_THEME_FILES+=("$1")
+}
+
+# Themes older than colors.toml still get their palette, but their
+# alacritty.toml never reaches the staged theme: an Alacritty config names the
+# program the terminal launches.
+stage_installed_colors_from_alacritty() {
+  local source="$1"
+  local scratch
+
+  if [[ -f $NEXT_THEME_PATH/colors.toml ]]; then
+    return
+  fi
+
+  if [[ ! -f $source/alacritty.toml || -L $source/alacritty.toml ]]; then
+    return
+  fi
+
+  scratch=$(mktemp -d)
+  cp "$source/alacritty.toml" "$scratch/alacritty.toml"
+  omarchy-theme-colors-from-alacritty "$scratch"
+
+  if [[ -f $scratch/colors.toml ]]; then
+    cp "$scratch/colors.toml" "$NEXT_THEME_PATH/colors.toml"
+  fi
+
+  rm -rf "$scratch"
+}
+
+# Copies a directory without ever following a symlink: in an installed theme one
+# points wherever the theme author chose, which is how an unlock.png becomes a
+# copy of any file the session can read.
+stage_installed_dir() {
+  local source="$1"
+  local dest="$2"
+  local entry name
+
+  mkdir -p "$dest"
+
+  for entry in "$source"/*; do
+    [[ -e $entry && ! -L $entry ]] || continue
+    name=${entry##*/}
+
+    if [[ -d $entry ]]; then
+      stage_installed_dir "$entry" "$dest/$name"
+    elif is_allowed_installed_file "$name"; then
+      cp "$entry" "$dest/$name"
+    else
+      note_ignored_installed_file "$name"
+    fi
+  done
+}
+
+# `omarchy theme install` clones into ~/.config/omarchy/themes, so a .git
+# directory there means the contents came from a stranger and are held to the
+# list above. A directory the user wrote themselves, and a symlink to their own
+# working copy, are theirs to fill however they like -- the same distinction
+# omarchy-theme-extras draws when it decides which themes it may pull.
+theme_came_from_a_repo() {
+  local source="$1"
+
+  [[ ! -L $source && -d $source/.git ]]
+}
+
+stage_installed_theme() {
+  local source="$1"
+  local entry name
+
+  [[ -d $source ]] || return 0
+
+  for entry in "$source"/*; do
+    [[ -e $entry ]] || continue
+    name=${entry##*/}
+
+    if [[ -L $entry ]]; then
+      note_ignored_installed_file "$name"
+    elif [[ -d $entry ]]; then
+      stage_installed_dir "$entry" "$NEXT_THEME_PATH/$name"
+    elif is_allowed_installed_file "$name"; then
+      cp "$entry" "$NEXT_THEME_PATH/$name"
+    else
+      note_ignored_installed_file "$name"
+    fi
+  done
+
+  stage_installed_colors_from_alacritty "$source"
+}
+
+report_ignored_theme_files() {
+  (( ${#IGNORED_THEME_FILES[@]} > 0 )) || return 0
+
+  echo "Ignored in $USER_THEMES_PATH/$THEME_NAME: ${IGNORED_THEME_FILES[*]}" >&2
+  echo "A theme installed from a git repo contributes its palette and media only; its own app configuration is not applied." >&2
+}
+
+resolve_theme_name() {
+  local requested="$1"
+  local slug themes_path entry name
+
+  slug=$(printf '%s' "$requested" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' _' '--' | sed -E 's/--+/-/g; s/^-+//; s/-+$//')
+  [[ -n $slug ]] || return 1
+
+  for themes_path in "$OMARCHY_THEMES_PATH" "$USER_THEMES_PATH"; do
+    [[ -d $themes_path ]] || continue
+
+    for entry in "$themes_path"/*; do
+      [[ -d $entry ]] || continue
+      name=${entry##*/}
+      if [[ ${name,,} == "$slug" ]]; then
+        printf '%s\n' "$name"
+        return 0
+      fi
+    done
+  done
+
+  printf '%s\n' "$slug"
+}
+
+validate_staged_colors() {
+  local colors_file="$NEXT_THEME_PATH/colors.toml"
+
+  if [[ ! -f $colors_file ]]; then
+    echo "Theme '$THEME_NAME' has no colors.toml; the current theme was left in place" >&2
+    return 1
+  fi
+  if [[ ! -s $colors_file ]]; then
+    echo "Theme '$THEME_NAME' has no colors.toml; the current theme was left in place" >&2
+    return 1
+  fi
+
+  if ! python3 - "$colors_file" <<'PY'
+import re
+import sys
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        colors = tomllib.load(stream)
+except (OSError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+
+if not isinstance(colors, dict):
+    raise SystemExit(1)
+background = colors.get("background", colors.get("bg", colors.get("color0")))
+foreground = colors.get("foreground", colors.get("fg", colors.get("color7")))
+if not isinstance(background, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", background):
+    raise SystemExit(1)
+if not isinstance(foreground, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", foreground):
+    raise SystemExit(1)
+PY
+  then
+    echo "Theme '$THEME_NAME' has a malformed colors.toml; the current theme was left in place" >&2
+    return 1
+  fi
+}
+
+swap_theme_directory() {
+  local had_current=false
+  THEME_SWAP_HAD_CURRENT=false
+
+  if [[ -e $CURRENT_THEME_PATH ]]; then
+    if ! mv "$CURRENT_THEME_PATH" "$THEME_ROLLBACK_PATH"; then
+      echo "Could not set the previous theme aside; the current theme was left in place" >&2
+      return 1
+    fi
+    had_current=true
+    THEME_SWAP_HAD_CURRENT=true
+  fi
+
+  if ! mv "$NEXT_THEME_PATH" "$CURRENT_THEME_PATH"; then
+    if [[ $had_current == true ]]; then
+      mv "$THEME_ROLLBACK_PATH" "$CURRENT_THEME_PATH" 2>/dev/null ||
+        echo "Could not restore the previous theme from $THEME_ROLLBACK_PATH" >&2
+    fi
+    return 1
+  fi
+}
+
+discard_theme_rollback() {
+  [[ -d $THEME_ROLLBACK_PATH ]] || return 0
+  rm -rf "$THEME_ROLLBACK_PATH"
+}
+
+restore_theme_after_failure() {
+  if [[ ${THEME_SWAP_HAD_CURRENT:-false} == true && -d $THEME_ROLLBACK_PATH ]]; then
+    rm -rf "$CURRENT_THEME_PATH"
+    if ! mv "$THEME_ROLLBACK_PATH" "$CURRENT_THEME_PATH"; then
+      echo "Could not restore the previous theme from $THEME_ROLLBACK_PATH" >&2
+      return 1
+    fi
+  else
+    rm -rf "$CURRENT_THEME_PATH"
+  fi
+
+  if [[ -n ${OLD_THEME_NAME-} ]]; then
+    printf '%s\n' "$OLD_THEME_NAME" >"$HOME/.local/state/omarchy/current/theme.name" || return 1
+  else
+    rm -f "$HOME/.local/state/omarchy/current/theme.name"
+  fi
+
+  if [[ -n ${OLD_BACKGROUND_TARGET-} ]]; then
+    ln -nsf "$OLD_BACKGROUND_TARGET" "$CURRENT_BACKGROUND_LINK" || return 1
+  else
+    rm -f "$CURRENT_BACKGROUND_LINK"
+  fi
+}
+
+post_hook_failures=()
+
+REQUESTED_THEME_NAME="$1"
+THEME_NAME=$(resolve_theme_name "$REQUESTED_THEME_NAME")
+THEME_HEADLESS=0
+if [[ ${OMARCHY_THEME_HEADLESS:-} == "1" || ${OMARCHY_THEME_OFFLINE:-} == "1" ]]; then
+  THEME_HEADLESS=1
+fi
+
+if [[ -z $THEME_NAME || $THEME_NAME == .* || $THEME_NAME == */* ]]; then
+  echo "Invalid theme name: $1"
+  exit 1
+fi
+
+if [[ ! -d $OMARCHY_THEMES_PATH/$THEME_NAME ]] && [[ ! -d $USER_THEMES_PATH/$THEME_NAME ]]; then
+  echo "Theme '$THEME_NAME' does not exist"
+  exit 1
+fi
+
+# Serialize theme changes. Theme switching rebuilds a shared next-theme staging
+# directory and updates current theme/background symlinks; concurrent calls can
+# otherwise race and make one selection appear to be ignored.
+exec 9>"$THEME_SET_LOCK"
+flock 9
+
+# Setup clean next theme directory (for atomic theme config swapping)
+rm -rf "$NEXT_THEME_PATH"
+mkdir -p "$NEXT_THEME_PATH"
+
+# Copy official theme first, then overlay the user's theme on top
+cp -r "$OMARCHY_THEMES_PATH/$THEME_NAME/"* "$NEXT_THEME_PATH/" 2>/dev/null
+
+if theme_came_from_a_repo "$USER_THEMES_PATH/$THEME_NAME"; then
+  stage_installed_theme "$USER_THEMES_PATH/$THEME_NAME"
+  report_ignored_theme_files
+else
+  cp -r "$USER_THEMES_PATH/$THEME_NAME/"* "$NEXT_THEME_PATH/" 2>/dev/null
+fi
+
+# Generate colors.toml from alacritty.toml if theme is missing colors.toml
+if [[ ! -f $NEXT_THEME_PATH/colors.toml && -f $NEXT_THEME_PATH/alacritty.toml ]]; then
+  omarchy-theme-colors-from-alacritty "$NEXT_THEME_PATH"
+fi
+
+# Generate dynamic configs
+omarchy-theme-set-templates
+
+if ! validate_staged_colors; then
+  exit 1
+fi
+
+CHOSEN_THEME_BACKGROUND=""
+OLD_BACKGROUND_SNAPSHOT=""
+OLD_THEME_NAME=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || true)
+OLD_BACKGROUND_TARGET=$(readlink "$CURRENT_BACKGROUND_LINK" 2>/dev/null || true)
+if [[ $OMARCHY_THEME_SKIP_BACKGROUND == "1" && -n $OLD_BACKGROUND_TARGET && -f $OLD_BACKGROUND_TARGET && $OLD_BACKGROUND_TARGET == "$CURRENT_THEME_PATH"/* ]]; then
+  mkdir -p "$BACKGROUND_TRANSITION_CACHE"
+  preserved_background="$BACKGROUND_TRANSITION_CACHE/preserved-background"
+  cp -f --reflink=auto "$OLD_BACKGROUND_TARGET" "$preserved_background" || preserved_background=""
+  [[ -z $preserved_background ]] || OLD_BACKGROUND_TARGET="$preserved_background"
+fi
+BACKGROUND_TRANSITION_SNAPSHOTS=true
+if [[ $THEME_HEADLESS != "1" && $OMARCHY_THEME_SKIP_BACKGROUND != "1" ]]; then
+  # Resolve the staged choice while the old theme still exists. Video changes
+  # switch directly to the durable path in QML, so neither side needs a copy.
+  if choose_staged_theme_background; then
+    if background_transition_uses_snapshots "$CHOSEN_THEME_BACKGROUND"; then
+      OLD_BACKGROUND_SNAPSHOT=$(snapshot_current_background)
+    else
+      BACKGROUND_TRANSITION_SNAPSHOTS=false
+    fi
+  fi
+fi
+
+# Swap next theme in as current
+if ! swap_theme_directory; then
+  echo "Could not apply theme '$THEME_NAME'; the previous theme was restored" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$THEME_NAME" >"$HOME/.local/state/omarchy/current/theme.name"; then
+  restore_theme_after_failure || true
+  echo "Could not apply theme '$THEME_NAME'; the previous theme was restored" >&2
+  exit 1
+fi
+
+# Make the running shell pick up the new palette immediately while the rest of
+# the theme hooks run.
+colors_payload=$([[ -f $CURRENT_THEME_PATH/colors.toml ]] && base64 -w 0 "$CURRENT_THEME_PATH/colors.toml")
+shell_payload=$([[ -f $CURRENT_THEME_PATH/shell.toml ]] && base64 -w 0 "$CURRENT_THEME_PATH/shell.toml")
+background_failure=0
+if [[ $THEME_HEADLESS == "1" ]]; then
+  # No shell/session bus exists during ISO chroot finalization, but the first
+  # real login still needs a current background symlink for omarchy-shell to
+  # render.
+  if [[ $OMARCHY_THEME_SKIP_BACKGROUND != "1" ]]; then
+    set_theme_background_link || background_failure=1
+  fi
+elif [[ $OMARCHY_THEME_SKIP_BACKGROUND == "1" ]]; then
+  shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
+else
+  set_theme_background || background_failure=1
+fi
+
+if [[ $OMARCHY_THEME_SKIP_BACKGROUND == "1" && -n $OLD_BACKGROUND_TARGET ]]; then
+  ln -nsf "$OLD_BACKGROUND_TARGET" "$CURRENT_BACKGROUND_LINK" || background_failure=1
+fi
+
+if (( background_failure != 0 )); then
+  restore_theme_after_failure || true
+  echo "Could not apply theme '$THEME_NAME'; the previous theme was restored" >&2
+  exit 1
+fi
+
+discard_theme_rollback
+
+# The shared staging/current symlinks are updated and the shell has accepted
+# the transition. Let another theme selection queue only behind that critical
+# section, not behind slower app-retint hooks and selector cache warmups.
+flock -u 9
+
+post_theme_commands=(
+  omarchy-restart-terminal
+  omarchy-restart-hyprctl
+  omarchy-restart-btop
+  omarchy-restart-opencode
+  omarchy-restart-helix
+  omarchy-theme-set-btop
+  omarchy-theme-set-yazi
+  omarchy-theme-set-gtk
+  omarchy-theme-set-firefox
+  omarchy-theme-set-starship
+  omarchy-theme-set-qt
+  omarchy-theme-set-cache
+  omarchy-theme-set-ekphos
+  omarchy-theme-set-kaizen
+  omarchy-theme-set-foot
+  omarchy-theme-set-tmux
+  omarchy-theme-set-gnome
+  omarchy-theme-set-pi
+  omarchy-theme-set-claude
+  omarchy-theme-set-hermes
+  omarchy-theme-set-t3code
+  omarchy-theme-set-browser
+  omarchy-theme-set-vscode
+  omarchy-theme-set-obsidian
+  omarchy-theme-set-keyboard
+)
+
+if [[ $THEME_HEADLESS != "1" ]]; then
+  run_parallel "${post_theme_commands[@]}" || true
+
+  if ! omarchy-hook theme-set "$THEME_NAME" >/dev/null; then
+    post_hook_failures+=("omarchy-hook theme-set $THEME_NAME")
+  fi
+
+  # Warm selector caches after the theme is applied. The shell hot-reloads theme
+  # colors/backgrounds, so keep the running instance alive and preload the picker
+  # rows/selection to avoid first-open carousel settling after a theme change.
+  omarchy-theme-switcher --preload >/dev/null 2>&1 ||
+    post_hook_failures+=("omarchy-theme-switcher --preload")
+  omarchy-theme-bg-cache >/dev/null 2>&1 &
+
+  if (( ${#post_hook_failures[@]} > 0 )); then
+    printf "Theme '%s' is applied, but these steps failed: %s\n" \
+      "$THEME_NAME" "${post_hook_failures[*]}" >&2
+    exit 1
+  fi
+fi

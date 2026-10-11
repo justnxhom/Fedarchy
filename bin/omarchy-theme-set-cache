@@ -1,0 +1,108 @@
+#!/bin/bash
+# Publish the theme payloads that applications load by path from the shared
+# theme cache.
+#
+# Alacritty, kitty, Neovim and Hyprland each read their colours from a file at a
+# fixed path under ~/.cache/nahom-theme rather than from their own configuration
+# directory -- alacritty.toml `import`s it, kitty.conf `include`s it, nvim
+# `dofile`s it, and Hyprland's decoration module loads it and reads the table it
+# returns. The shell sources
+# three more from the same place. Those paths predate the template pipeline, and
+# rewriting them would mean editing application configuration, including
+# ~/.config/hypr and ~/.zshrc, which this step would rather not do.
+#
+# So the payloads are written to the paths the applications already expect, and
+# the name each one wants is mapped here. Fedarchy renders the content; this
+# only decides where it lands. Two of the four are renamed on the way, because
+# the staged payload and the expected file have never shared a name.
+set -euo pipefail
+
+THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+CACHE_DIR="$HOME/.cache/nahom-theme"
+
+# staged payload: the name the application reads
+PAYLOADS=(
+  "alacritty.toml:alacritty.toml"
+  "kitty.conf:kitty.conf"
+  "nvim-theme.lua:nvim-theme.lua"
+  "hypr-colors.lua:hypr-colors.lua"
+  "zsh-theme.zsh:zsh-theme.zsh"
+  "fzf.zsh:fzf.zsh"
+  "cava-theme.conf:cava-theme.conf"
+)
+
+[[ -d $THEME_DIR ]] || exit 0
+
+mkdir -p "$CACHE_DIR"
+installed=0
+hypr_changed=0
+
+# Written through a temporary file in the same directory and then renamed, so an
+# application reloading its theme cannot read a half-written file. These are read
+# on every window creation, so a partial read is a visible flash of default
+# colours rather than a silent failure.
+for entry in "${PAYLOADS[@]}"; do
+  staged_name="${entry%%:*}"
+  cache_name="${entry##*:}"
+  source_file="$THEME_DIR/$staged_name"
+
+  [[ -f $source_file ]] || continue
+
+  # Compared before it is replaced, because this one payload decides whether the
+  # compositor is reloaded below. The step runs from a dozen other scripts --
+  # theme-refresh, theme-install, the browser and editor steps -- none of which
+  # change the theme, so "did this file actually change" is the only question that
+  # keeps a full config reload tied to a real theme change.
+  if [[ $cache_name == hypr-colors.lua ]] && ! cmp -s "$source_file" "$CACHE_DIR/$cache_name" 2>/dev/null; then
+    hypr_changed=1
+  fi
+
+  tmp="$(mktemp "${CACHE_DIR}/${cache_name}.XXXXXX")"
+  if cat "$source_file" >"$tmp"; then
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$CACHE_DIR/$cache_name"
+    installed=$((installed + 1))
+  else
+    rm -f "$tmp"
+  fi
+done
+
+# Sweep away temporary files orphaned by a run that was interrupted between
+# creating one and renaming it. They are named after the payload they were being
+# written for, so they are safe to identify: nothing else in the cache has a name
+# of the form "<payload>.XXXXXX". Left in place they accumulate one per aborted
+# theme switch, and they are indistinguishable from real payloads to anything
+# listing the directory.
+for entry in "${PAYLOADS[@]}"; do
+  rm -f "${CACHE_DIR}/${entry##*:}".??????
+done
+
+(( installed > 0 )) && printf 'theme cache published: %s\n' "$CACHE_DIR"
+
+# Hyprland's decoration module dofiles hypr-colors.lua when the configuration is
+# read, and Hyprland's automatic reload only tracks the configuration files it
+# was told about -- not a path pulled in by dofile. So the new border colour sits
+# in the file and never reaches the running compositor until something asks it to
+# re-read. Everything else published here is watched by the application that reads
+# it; this one is the exception and needs the reload to be requested.
+# Only when the payload actually changed. A reload re-executes the whole Hyprland
+# configuration, and the shell's popups are layer-shell surfaces living inside it,
+# so reloading on every theme switch is reloading the running desktop for nothing.
+# The comparison above is what makes it proportional to a real theme change.
+#
+# "config-only" because a plain reload also re-reads the monitor configuration,
+# which is a separate and visible effect nobody asked for here.
+#
+# Setting just the two colour values with `hyprctl keyword` would avoid the reload
+# altogether and is the better shape for this. It is not available on this build:
+# Hyprland 0.56 answers "keyword can't work with non-legacy parsers. Use eval.",
+# and hl.config is a whole-configuration setter with no partial merge, so an eval
+# that sets one value risks resetting the gaps and the border size with it.
+if (( hypr_changed )) && [[ ${OMARCHY_THEME_HEADLESS:-0} != 1 ]]; then
+  hyprctl_bin="${HYPRCTL:-/usr/bin/hyprctl}"
+  if [[ -x $hyprctl_bin ]]; then
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" "$hyprctl_bin" reload config-only >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

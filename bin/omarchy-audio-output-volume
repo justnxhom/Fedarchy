@@ -1,0 +1,153 @@
+#!/bin/bash
+
+# omarchy:summary=Adjust output volume and show the Omarchy OSD
+# omarchy:args=<raise|lower|mute-toggle|+N|-N>
+# omarchy:examples=omarchy audio output volume raise | omarchy audio output volume lower | omarchy audio output volume mute-toggle | omarchy audio output volume +1
+
+action="${1:-}"
+
+if [[ -z $action ]]; then
+  echo "Usage: omarchy-audio-output-volume <raise|lower|mute-toggle|+N|-N>" >&2
+  exit 1
+fi
+
+# Resolve through any DSP sink to the physical one, so the keys always move real
+# loudness and the processing always sees full-scale input. Shared with the audio
+# panel and the output switcher.
+sink="$(omarchy-audio-output-sink 2>/dev/null || true)"
+if [[ -z $sink ]]; then
+  echo "Could not resolve an audio sink to control." >&2
+  exit 1
+fi
+
+# pactl reports the same percentage scale wpctl does (both are the raw volume
+# over PA_VOLUME_NORM), so the OSD reads identically either way.
+volume_percent() {
+  timeout 2 pactl get-sink-volume "$sink" 2>/dev/null |
+    awk 'NR == 1 {
+      for (i = 1; i <= NF; i++)
+        if ($i ~ /%$/) {sub("%", "", $i); print $i; exit}
+    }'
+}
+
+volume_muted() {
+  [[ $(sink_mute_state) == "yes" ]]
+}
+
+sink_mute_state() {
+  timeout 2 pactl get-sink-mute "$sink" 2>/dev/null |
+    awk 'NR == 1 {print $NF; exit}'
+}
+
+case "$action" in
+  raise) action="+5" ;;
+  lower) action="-5" ;;
+  mute-toggle | +* | -*) ;;
+  *)
+    echo "Unknown volume action: $action" >&2
+    exit 1
+    ;;
+esac
+
+(( $# == 1 )) || {
+  echo "Usage: omarchy-audio-output-volume <raise|lower|mute-toggle|+N|-N>" >&2
+  exit 1
+}
+
+if [[ $action == "mute-toggle" ]]; then
+  # A mute toggle must be a single decision even when the key repeats, so the
+  # debounce stamp is what decides, and it is the only state this key keeps.
+  # It lives in a directory only this user can write: a predictable name in a
+  # world-writable /tmp is a symlink target that another local user can point at
+  # a file we then truncate, and a shared name across users makes two desktops
+  # suppress each other's toggles. Without a private directory the toggle runs
+  # every time rather than guessing a path.
+  debounce_dir="${XDG_RUNTIME_DIR:-}"
+  if [[ -z $debounce_dir && -n ${HOME:-} ]]; then
+    debounce_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+    mkdir -p "$debounce_dir" 2>/dev/null || debounce_dir=""
+    [[ -n $debounce_dir ]] && chmod 700 "$debounce_dir" 2>/dev/null || true
+  fi
+  [[ -d $debounce_dir && -w $debounce_dir ]] || debounce_dir=""
+
+  if [[ -n $debounce_dir ]]; then
+    debounce_file="$debounce_dir/omarchy-audio-output-volume-mute-toggle.last"
+    now=$(date +%s%3N 2>/dev/null)
+    [[ $now =~ ^[0-9]+$ ]] || now=$(($(date +%s) * 1000))
+    last=0
+    if [[ -r $debounce_file ]]; then
+      read -r last <"$debounce_file" || last=0
+    fi
+    [[ $last =~ ^[0-9]+$ ]] || last=0
+    if ((now >= last && now - last < 250)); then
+      exit 0
+    fi
+    printf '%s\n' "$now" >"$debounce_file" 2>/dev/null || true
+  fi
+
+  if ! timeout 2 pactl set-sink-mute "$sink" toggle; then
+    echo "Could not toggle mute on $sink." >&2
+    exit 1
+  fi
+elif [[ $action =~ ^([+-])([0-9]+)$ ]]; then
+  direction="${BASH_REMATCH[1]}"
+  step="${BASH_REMATCH[2]}"
+
+  (( step > 0 )) || {
+    echo "Unknown volume action: $action" >&2
+    exit 1
+  }
+
+  current="$(volume_percent)"
+  if [[ ! $current =~ ^[0-9]+$ ]]; then
+    echo "Could not read volume for $sink." >&2
+    exit 1
+  fi
+
+  if [[ $direction == "+" ]]; then
+    next=$((current + step))
+    ((next <= 100)) || next=100
+  else
+    next=$((current - step))
+    ((next >= 0)) || next=0
+  fi
+
+  # Unmute first, then set the level: a muted sink refuses the volume change,
+  # and reporting that as a failure would leave the key looking broken while the
+  # sink is still muted. Read the mute state back rather than assuming, so a
+  # sink that stays muted is reported instead of raised at a level nobody hears.
+  if ! timeout 2 pactl set-sink-mute "$sink" 0 ||
+    ! timeout 2 pactl set-sink-volume "$sink" "${next}%" ||
+    [[ $(sink_mute_state) != "no" ]]; then
+    echo "Could not set volume on $sink." >&2
+    exit 1
+  fi
+else
+  echo "Unknown volume action: $action" >&2
+  exit 1
+fi
+
+percent="$(volume_percent)"
+if [[ ! $percent =~ ^[0-9]+$ ]]; then
+  echo "Could not read the volume of $sink after changing it." >&2
+  exit 1
+fi
+(( percent > 100 )) && percent=100
+
+# Read back the mute state: the sink may have been muted by a hardware key, a
+# mixer, or the panel while the level changed, and showing a level icon then
+# would be a false OSD.
+if volume_muted; then
+  icon="volume-muted"
+elif ((percent == 0)); then
+  icon="volume-muted"
+elif ((percent <= 33)); then
+  icon="volume-low"
+elif ((percent <= 66)); then
+  icon="volume-medium"
+else
+  icon="volume-high"
+fi
+
+omarchy-osd -i "$icon" -p "$percent"
+exit $?

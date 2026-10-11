@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# omarchy:summary=Search COPR repositories on copr.fedorainfracloud.org
+# omarchy:args=<query> [--limit N]
+
+set -euo pipefail
+
+COPR_HOST="${OMARCHY_COPR_HOST:-https://copr.fedorainfracloud.org}"
+TIMEOUT="${OMARCHY_COPR_SEARCH_TIMEOUT:-30}"
+
+usage() {
+  echo "Usage: omarchy-copr-search <query> [--limit N]"
+  echo "Example: omarchy-copr-search starship"
+}
+
+fail() { echo "Error: $*" >&2; exit 1; }
+
+query=""
+limit=50
+
+while (( $# > 0 )); do
+  case "$1" in
+    --limit)
+      shift
+      (( $# > 0 )) || fail "--limit requires a value"
+      [[ $1 =~ ^[0-9]+$ ]] && (( $1 > 0 )) || fail "invalid --limit: $1"
+      limit="$1"
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -*)
+      fail "unknown option: $1"
+      ;;
+    *)
+      [[ -z $query ]] || fail "only one search term is supported"
+      query="$1"
+      ;;
+  esac
+  shift
+done
+
+[[ -n $query ]] || { usage; exit 1; }
+
+# Trim surrounding whitespace.
+query="${query#"${query%%[![:space:]]*}"}"
+query="${query%"${query##*[![:space:]]}"}"
+[[ -n $query ]] || fail "search term is empty"
+
+# "owner/name" is a valid input, but the search box only matches free text.
+query="${query//\// }"
+
+command -v curl >/dev/null 2>&1 || fail "curl is required to search COPR"
+
+response=$(curl -fsSL --max-time "$TIMEOUT" --get --data-urlencode "fulltext=$query" "$COPR_HOST/coprs/fulltext/") ||
+  fail "COPR search request failed"
+
+# The COPR search page links each hit as /coprs/<owner>/<name>/.
+# /coprs/packages/... are site pages, not projects.
+results=$(
+  printf '%s' "$response" |
+    grep -oE 'href="/coprs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/?"' |
+    sed -E 's|^href="/coprs/||; s|/"$||' |
+    grep -vE '^(packages|fulltext|ownername)/' |
+    sort -u |
+    head -n "$limit" || true
+)
+
+if [[ -z $results ]]; then
+  echo "No COPR projects matched: $query"
+  exit 0
+fi
+
+printf '%s\n' "$results"

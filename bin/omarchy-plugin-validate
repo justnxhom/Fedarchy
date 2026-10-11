@@ -1,0 +1,94 @@
+#!/bin/bash
+set -euo pipefail
+
+fail() {
+  echo "omarchy-plugin-validate: $*" >&2
+  exit 1
+}
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  echo "Usage: omarchy plugin validate <plugin-folder>"
+  exit 0
+fi
+
+PLUGIN_DIR="${1:-}"
+[[ -n $PLUGIN_DIR && -d $PLUGIN_DIR && ! -L $PLUGIN_DIR ]] \
+  || fail "plugin folder not found or is a symlink: ${PLUGIN_DIR:-<none>}"
+
+MANIFEST="$PLUGIN_DIR/manifest.json"
+[[ -f $MANIFEST && ! -L $MANIFEST ]] || fail "missing manifest.json in $PLUGIN_DIR"
+jq -e . "$MANIFEST" >/dev/null 2>&1 || fail "manifest.json is not valid JSON: $MANIFEST"
+
+jq -e '
+  .schemaVersion == 1
+  and (.id | type == "string" and test("[^[:space:]]"))
+  and (.name | type == "string" and test("[^[:space:]]"))
+  and (.version | type == "string" and test("[^[:space:]]"))
+  and (if has("description") then (.description | type == "string" and test("[^[:space:]]")) else true end)
+  and (.kinds | type == "array" and length > 0)
+  and (.kinds | all(.[]; type == "string" and IN("bar", "bar-widget", "menu", "overlay", "panel", "service")))
+  and (.kinds | length == (unique | length))
+  and (.entryPoints | type == "object")
+  and (.entryPoints | to_entries | all(.[]; (.key | IN("bar", "barWidget", "menu", "overlay", "panel", "service")) and (.value | type == "string")))
+' "$MANIFEST" >/dev/null 2>&1 || fail "manifest fields or types are invalid"
+
+ID=$(jq -r '.id' "$MANIFEST")
+[[ $ID =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "invalid plugin id '$ID'"
+[[ $ID != *..* ]] || fail "invalid plugin id '$ID'"
+[[ $ID != omarchy.* ]] || fail "plugin id '$ID' uses the reserved omarchy.* namespace"
+
+while IFS= read -r ep_json; do
+  [[ -n $ep_json ]] || continue
+  ep=$(jq -r '.' <<<"$ep_json")
+  [[ -n $ep && $ep != *$'\n'* && $ep != *$'\r'* && $ep != *'\\'* ]] \
+    || fail "entry point must be a non-empty relative path"
+  [[ $ep != /* ]] || fail "entry point must be a relative path: '$ep'"
+  IFS='/' read -r -a parts <<<"$ep"
+  for part in "${parts[@]}"; do
+    [[ $part != ".." ]] || fail "entry point may not contain '..': '$ep'"
+  done
+  [[ -f "$PLUGIN_DIR/$ep" && ! -L "$PLUGIN_DIR/$ep" ]] \
+    || fail "entry point file is missing or is a symlink: '$ep'"
+done < <(jq -c '.entryPoints | to_entries[] | .value' "$MANIFEST")
+
+for kind_entry_point in \
+  "bar:bar" \
+  "bar-widget:barWidget" \
+  "menu:menu" \
+  "overlay:overlay" \
+  "panel:panel" \
+  "service:service"; do
+  kind="${kind_entry_point%%:*}"
+  entry_point="${kind_entry_point##*:}"
+  jq -e --arg kind "$kind" '(.kinds | index($kind)) != null' "$MANIFEST" >/dev/null 2>&1 || continue
+  jq -e --arg ep "$entry_point" '.entryPoints | has($ep)' "$MANIFEST" >/dev/null 2>&1 \
+    || fail "kind '$kind' requires an 'entryPoints.$entry_point' to load"
+done
+
+jq -e '
+  if (.kinds | index("bar-widget")) != null then
+    (.barWidget | type == "object")
+    and (.barWidget.displayName | type == "string" and test("[^[:space:]]"))
+    and (.barWidget.description | type == "string" and test("[^[:space:]]"))
+    and (.barWidget.category | type == "string" and test("[^[:space:]]"))
+    and (.barWidget.allowMultiple | type == "boolean")
+    and ((.barWidget.defaultSection? | type) != "string" or (.barWidget.defaultSection | IN("left", "center", "right")))
+  else true end
+' "$MANIFEST" >/dev/null 2>&1 || fail "barWidget metadata is invalid"
+
+jq -e '
+  if has("omarchy") then
+    (.omarchy | type == "object")
+    and (if (.omarchy | has("capabilities")) then
+      (.omarchy.capabilities | type == "array" and all(.[]; type == "string" and test("[^[:space:]]")))
+      else true end)
+    and (if (.omarchy | has("clonedFrom")) then
+      (.omarchy.clonedFrom | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") and (contains("..") | not))
+      else true end)
+  else true end
+' "$MANIFEST" >/dev/null 2>&1 || fail "omarchy metadata is invalid"
+
+link=$(find "$PLUGIN_DIR" -path "$PLUGIN_DIR/.git" -prune -o -type l -print -quit 2>/dev/null)
+[[ -z $link ]] || fail "symlinks are not allowed inside a plugin folder: $link"
+
+exit 0

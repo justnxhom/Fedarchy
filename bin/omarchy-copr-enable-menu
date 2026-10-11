@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# omarchy:summary=Interactive picker to enable a disabled COPR repository
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+disabled=$(omarchy-copr-list --disabled 2>/dev/null || true)
+if [[ -z $disabled ]]; then
+  echo "No disabled COPR repositories found."
+  exit 0
+fi
+
+if command -v gum >/dev/null 2>&1; then
+  selected=$(echo "$disabled" | gum choose --header "Select COPR to enable") || true
+else
+  selected=$(echo "$disabled" | fzf --header="Select COPR to enable") || true
+fi
+
+[[ -n $selected ]] || { echo "Cancelled."; exit 0; }
+
+# The --disabled listing prints host/owner/name with a trailing "(disabled)", the
+# same shape the remove menu already handles. Both forms are accepted anyway: the
+# two listing flags do not agree on a shape, and depending on one of them is how
+# this ends up rejecting every repository the user actually has.
+line="${selected% (disabled)}"
+short=""
+case "$line" in
+  copr:*)
+    rest="${line#copr:}"
+    rest="${rest#*:}"
+    if [[ $rest == *:* ]]; then
+      short="${rest%%:*}/${rest#*:}"
+    else
+      short="$rest"
+    fi
+    ;;
+  */*/*)
+    short=$(printf '%s' "$line" | awk -F/ '{print $(NF-1)"/"$NF}')
+    ;;
+  */*)
+    short="$line"
+    ;;
+esac
+
+if [[ $short != */* || $short == *:* ]]; then
+  echo "Unable to parse COPR repository: $selected" >&2
+  exit 1
+fi
+
+exec omarchy-copr-enable "$short"
