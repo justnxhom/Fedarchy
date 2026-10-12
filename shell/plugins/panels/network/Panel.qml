@@ -510,7 +510,8 @@ Panel {
   function refresh(scanWifi) {
     checkConnectivity()
     if (scanWifi === undefined) scanWifi = false
-    if (!detailsProc.running) detailsProc.running = true    if (!bandProc.running) {
+    if (!detailsProc.running) detailsProc.running = true
+    if (!bandProc.running) {
       bandProc.command = ["omarchy-network-band"]
       bandProc.running = true
     }
@@ -1036,7 +1037,9 @@ Panel {
               root.bandAutoFocused = false
             } else {
               root.focusSection = "wifi"
-            }        }
+            }
+          }
+        }
         if (dx !== 0) {
           if (root.focusSection === "header") root.selectHeaderByDelta(dx)
           else if (root.focusSection === "band") { if (!root.bandAutoFocused) root.selectBandByDelta(dx) }

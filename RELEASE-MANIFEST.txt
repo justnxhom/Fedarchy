@@ -712,7 +712,6 @@ logo.txt
 PRECAUTION-INVENTORY.txt
 README.md
 RELEASE-INVENTORY.txt
-RELEASE-MANIFEST.txt
 scripts/dev-run.sh
 scripts/fedarchy-shell
 scripts/install-components.sh
