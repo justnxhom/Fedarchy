@@ -8,4 +8,4 @@ hyprctl clients -j | \
     hyprctl dispatch "hl.dsp.window.close({ window = \"address:$addr\" })" >/dev/null
   done
 
-hyprctl dispatch 'hl.dsp.focus({ workspace = "1" })' >/dev/null 2>&1 || hyprctl dispatch workspace 1
+hyprctl dispatch 'hl.dsp.focus({ workspace = "1" })' >/dev/null 2>&1

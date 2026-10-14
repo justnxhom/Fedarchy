@@ -9,4 +9,4 @@ omarchy-osd -i logout -m "Logging out" -d 5000
 omarchy-hyprland-window-close-all
 sleep 1 # Allow apps like Chrome to shutdown correctly
 
-hyprctl dispatch exit
+hyprctl dispatch "hl.dsp.exit()"
