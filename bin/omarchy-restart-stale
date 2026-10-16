@@ -1,0 +1,154 @@
+#!/bin/bash
+
+# fedarchy:summary=Restart the services left running pre-update code
+# fedarchy:args=[--dry-run|--all]
+# fedarchy:hidden=true
+#
+# Companion to the omarchy.needs-restart bar widget. The widget warns that an
+# update left processes running old code; this performs the cheaper remedy for
+# the cases a reboot cannot be needed for: restarting the affected services.
+#
+# It deliberately does not touch anything when a reboot is genuinely required,
+# because restarting services cannot clear a rebuilt kernel, ld.so or libc. The
+# widget routes that case to omarchy-system-reboot instead.
+#
+# Mapping a rebuilt path to a service is done by asking systemd what each unit's
+# ExecStart actually runs, rather than guessing from the filename. That matters:
+# abrt-journal-core.service runs /usr/bin/abrt-dump-journal-core, so a basename
+# match would find nothing while the real path match finds the unit.
+
+set -uo pipefail
+
+REBUILD_LIST="${FEDARCHY_REBUILD_LIST:-/var/run/rpm-rebuilddb.txt}"
+DRY_RUN=0
+ASSUME_YES=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --all | -y | --yes) ASSUME_YES=1 ;;
+    -h | --help)
+      sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      printf 'omarchy-restart-stale: unknown option %s\n' "$arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Reboot-critical rebuilds cannot be fixed by restarting anything.
+critical_reboot_path() {
+  local entry="$1" resolved
+  resolved="$(readlink -f -- "$entry" 2>/dev/null)" || resolved="$entry"
+  case "$resolved" in
+    /boot/vmlinuz* | /boot/initramfs* | /boot/initrd* | /boot/vmlinuz-* | \
+    /lib/modules/* | /usr/lib/modules/* | \
+    /lib64/ld-* | /lib/ld-* | /usr/lib64/ld-* | \
+    /lib64/libc.so* | /usr/lib64/libc.so* | /lib64/libc-[0-9]*.so* | /usr/lib64/libc-[0-9]*.so* | \
+    /usr/lib/systemd/systemd | /usr/lib/systemd/systemd-* | /lib/systemd/systemd)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+if [[ ! -r $REBUILD_LIST ]]; then
+  printf 'Nothing to do: %s does not exist.\n' "$REBUILD_LIST"
+  printf 'No binaries were rebuilt since boot.\n'
+  exit 0
+fi
+
+declare -a candidates=()
+while IFS= read -r line || [[ -n ${line:-} ]]; do
+  entry="${line#"${line%%[![:space:]]*}"}"
+  entry="${entry%"${entry##*[![:space:]]}"}"
+  [[ -n $entry ]] || continue
+  critical_reboot_path "$entry" && continue
+  candidates+=("$entry")
+done <"$REBUILD_LIST"
+
+if [[ ${#candidates[@]} -eq 0 ]]; then
+  printf 'Nothing to restart: every rebuilt binary is reboot-critical.\n'
+  printf 'Reboot instead.\n'
+  exit 0
+fi
+
+# Build unit -> path index straight from systemd, so matching is against the
+# real executable of each unit.
+declare -A unit_paths=()
+declare -A unit_seen=()
+while IFS= read -r unit; do
+  [[ -n $unit ]] || continue
+  unit_seen["$unit"]=1
+  while IFS= read -r exe; do
+    [[ -n $exe ]] || continue
+    resolved="$(readlink -f -- "$exe" 2>/dev/null)" || resolved="$exe"
+    unit_paths["$resolved"]="$unit"
+  done < <(systemctl show --property=ExecStart --value "$unit" 2>/dev/null |
+    grep -oE '/[^ ;]+' || true)
+done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}')
+
+declare -a matched=()
+declare -A matched_seen=()
+for entry in "${candidates[@]}"; do
+  resolved="$(readlink -f -- "$entry" 2>/dev/null)" || resolved="$entry"
+  unit="${unit_paths[$resolved]:-}"
+  [[ -n $unit ]] || continue
+  [[ -n ${matched_seen[$unit]:-} ]] && continue
+  matched_seen["$unit"]=1
+  matched+=("$unit")
+done
+
+if [[ ${#matched[@]} -eq 0 ]]; then
+  printf 'No systemd service was found for the rebuilt binaries:\n'
+  printf '  %s\n' "${candidates[@]}"
+  printf '\nThese are ordinary applications. Close and reopen them, or reboot.\n'
+  exit 0
+fi
+
+printf 'Services still running pre-update code:\n'
+printf '  %s\n' "${matched[@]}"
+printf '\n'
+
+if ((DRY_RUN)); then
+  printf 'Would restart:\n'
+  printf '  %s\n' "${matched[@]}"
+  printf '\nNothing was changed (--dry-run).\n'
+  exit 0
+fi
+
+if ((ASSUME_YES == 0)); then
+  if [[ ! -t 0 ]]; then
+    printf 'Not a terminal; refusing to restart without --all.\n'
+    exit 1
+  fi
+  printf 'Restart %s service(s) now? [y/N] ' "${#matched[@]}"
+  read -r reply || reply=""
+  case "$reply" in
+    y | Y | yes | Yes | YES) ;;
+    *)
+      printf 'Aborted. Nothing was changed.\n'
+      exit 130
+      ;;
+  esac
+fi
+
+failed=0
+for unit in "${matched[@]}"; do
+  printf 'Restarting %s ... ' "$unit"
+  if systemctl restart "$unit" >/dev/null 2>&1; then
+    printf 'ok\n'
+  else
+    printf 'FAILED\n'
+    failed=$((failed + 1))
+  fi
+done
+
+printf '\n'
+if ((failed)); then
+  printf '%s service(s) could not be restarted.\n' "$failed"
+  exit 1
+fi
+printf 'All affected services restarted. The warning should clear shortly.\n'

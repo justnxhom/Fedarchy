@@ -54,8 +54,6 @@ BarWidget {
     if (rebootRequired) {
       lines.push("A reboot is recommended")
       lines.push("Updated system components are still running from memory.")
-      lines.push("")
-      lines.push("Click to reboot.")
     }
     if (needsRestart) {
       if (rebootRequired) lines.push("")
@@ -67,13 +65,28 @@ BarWidget {
       for (var i = 0; i < shown; i++) lines.push("  " + entries[i])
       if (entries.length > shown) lines.push("  …and " + (entries.length - shown) + " more")
       lines.push("")
-      lines.push("Restart them, or reboot. Click to reboot.")
+      lines.push(rebootRequired
+        ? "Click to reboot."
+        : "Click to restart the affected services.")
     }
     return lines.join("\n")
   }
 
-  function reboot() {
-    if (root.bar) root.bar.run("omarchy-system-reboot")
+  // A reboot and a service restart are different remedies, so the click picks
+  // between them rather than always offering the heavier one:
+  //   * a reboot is genuinely required  -> reboot
+  //   * only stale services             -> restart those services
+  //   * ordinary applications           -> explain, change nothing
+  // Restarting services is shown in a floating terminal because the work is
+  // root, asks for confirmation, and reports per-unit results; running it blind
+  // from a bar click would leave the user with no idea what happened.
+  function activate() {
+    if (!root.bar) return
+    if (root.rebootRequired) {
+      root.bar.run("omarchy-system-reboot")
+      return
+    }
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation omarchy-restart-stale")
   }
 
   // Nothing pending: the slot collapses entirely rather than leaving a gap.
@@ -127,6 +140,6 @@ BarWidget {
     fontSize: Style.font.caption
     foreground: root.rebootRequired && root.bar ? root.bar.urgent : (root.bar ? root.bar.foreground : Color.foreground)
     tooltipText: root.shouldShow ? root.tooltip : ""
-    onPressed: root.reboot()
+    onPressed: root.activate()
   }
 }
