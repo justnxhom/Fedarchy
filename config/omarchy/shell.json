@@ -48,6 +48,9 @@
           "id": "omarchy.bluetooth"
         },
         {
+          "id": "omarchy.needs-restart"
+        },
+        {
           "id": "omarchy.network"
         },
         {

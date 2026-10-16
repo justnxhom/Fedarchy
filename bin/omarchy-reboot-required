@@ -1,0 +1,71 @@
+#!/bin/bash
+
+# fedarchy:summary=Print "yes" when a reboot is genuinely recommended
+# fedarchy:args=
+# fedarchy:hidden=true
+# fedarchy:requires-sudo=false
+#
+# The single source of truth for "does this machine want a reboot", used by the
+# omarchy.needs-restart bar widget so the widget does not have to work it out
+# for itself.
+#
+# A reboot is recommended when RPM says a still-mapped binary was rebuilt AND
+# that binary is one the running system depends on: the kernel, a dynamic
+# loader, or libc. A rebuilt userspace application only needs its process
+# restarted, which is a different and much weaker signal, so it is reported
+# separately by the widget through RPM's own rebuild list.
+#
+# Prints "yes" or "no" on stdout. Exit status is always 0 so a caller reading
+# stdout is never misled by a non-zero code.
+
+set -uo pipefail
+
+# Overridable so the reboot decision can be tested against a fixture instead of
+# by installing packages on the host. Unset in normal use.
+REBUILD_LIST="${FEDARCHY_REBUILD_LIST:-/var/run/rpm-rebuilddb.txt}"
+
+# No rebuild list at all means nothing was rebuilt this boot.
+[[ -r $REBUILD_LIST ]] || { printf 'no\n'; exit 0; }
+
+# Paths whose replacement needs a reboot rather than a service restart.
+# Matched against the realpath of each entry so that a versioned library such as
+# /usr/lib64/libfoo-1.so is recognised, and so a symlink reports its target.
+critical_reboot_path() {
+  local entry="$1" resolved
+  resolved="$(readlink -f -- "$entry" 2>/dev/null)" || resolved="$entry"
+
+  case "$resolved" in
+    /boot/vmlinuz* | /boot/initramfs* | /boot/initrd* | /boot/vmlinuz-*)
+      return 0
+      ;;
+    /lib/modules/* | /usr/lib/modules/*)
+      return 0
+      ;;
+    /lib64/ld-* | /lib/ld-* | /usr/lib64/ld-*)
+      return 0
+      ;;
+    /lib64/libc.so* | /lib64/libc-[0-9]*.so* | /usr/lib64/libc.so* | /usr/lib64/libc-[0-9]*.so* | /usr/lib64/libc.musl-*.so*)
+      return 0
+      ;;
+    /usr/lib64/libgcc_s.so* | /usr/lib64/libstdc++.so* | /lib64/libgcc_s.so* | /lib64/libstdc++.so*)
+      return 0
+      ;;
+    /usr/lib/systemd/systemd | /usr/lib/systemd/systemd-* | /lib/systemd/systemd)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+while IFS= read -r line || [[ -n ${line:-} ]]; do
+  entry="${line#"${line%%[![:space:]]*}"}"
+  entry="${entry%"${entry##*[![:space:]]}"}"
+  [[ -n $entry ]] || continue
+  if critical_reboot_path "$entry"; then
+    printf 'yes\n'
+    exit 0
+  fi
+done <"$REBUILD_LIST"
+
+printf 'no\n'
+exit 0

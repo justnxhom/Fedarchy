@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy.needs-restart",
+  "name": "Needs restart",
+  "version": "1.0.0",
+  "author": "Fedarchy",
+  "description": "Indicates when an update left services running old code, and offers a reboot",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "NeedsRestart.qml"
+  },
+  "barWidget": {
+    "displayName": "Needs restart",
+    "description": "Warns when the system or its services should be restarted",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
