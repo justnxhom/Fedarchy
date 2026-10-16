@@ -135,7 +135,12 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "\uf021"
+    // U+F053, a restart arrow, rather than the download arrow U+F021 that
+    // omarchy.system-update uses. The two are sequential phases of one flow --
+    // "updates available", then "applied but not live yet" -- and sharing a
+    // glyph made them read as competing badges for the same thing. Both
+    // codepoints are confirmed present in the bar's Nerd Font.
+    text: "\uf053"
     slotSize: Style.bar.statusSlot
     fontSize: Style.font.caption
     foreground: root.rebootRequired && root.bar ? root.bar.urgent : (root.bar ? root.bar.foreground : Color.foreground)
