@@ -1,0 +1,175 @@
+#!/bin/bash
+
+# fedarchy:summary=Sync edited commands from this checkout into ~/.local/bin
+# fedarchy:args=[--check|--dry-run|--all|--help]
+# fedarchy:hidden=true
+#
+# Fedarchy deploys bin/ as individual copies, so an edit to a script in this
+# checkout does not change the command already on your PATH until it is copied
+# again. This script closes that gap on demand.
+#
+# It is deliberately NOT a daemon and installs no hook, watcher or timer: it
+# runs when you run it, and does nothing else. For an always-live dev loop the
+# repo already has scripts/dev-run.sh, which prepends this checkout's bin/ to
+# PATH so the working tree is used directly.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve the checkout this belongs to.
+#
+# When run from inside the checkout (scripts/sync-commands), the project root is
+# simply the parent directory. When run from ~/.local/bin there is no parent
+# checkout to infer, so fall back to OMARCHY_PATH and then to ~/Fedarchy, the
+# same default bin/fedarchy uses. Without this, an installed copy would treat
+# ~/.local/bin as its own source directory and report everything as in sync.
+if [[ -d "$(dirname "$SCRIPT_DIR")/bin" && $(basename "$SCRIPT_DIR") == scripts ]]; then
+  PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+else
+  PROJECT_ROOT="${OMARCHY_PATH:-$HOME/Fedarchy}"
+fi
+
+SOURCE_DIR="$PROJECT_ROOT/bin"
+TARGET_DIR="${FEDARCHY_BIN_TARGET:-$HOME/.local/bin}"
+
+MODE=sync
+declare -a ONLY=()
+
+usage() {
+  cat <<'USAGE'
+Sync edited commands from this checkout into ~/.local/bin
+
+Usage:
+  sync-commands              Copy commands whose content differs
+  sync-commands --check      Report what would change; change nothing
+  sync-commands --dry-run    Show the copy commands without running them
+  sync-commands --all        Copy every command, changed or not
+  sync-commands <name>...    Limit to these commands (with or without fedarchy-)
+  sync-commands --help       This text
+
+Only files that are executable in bin/ are considered, so helper scripts and
+data files are never copied into your PATH.
+
+Why this exists:
+  Fedarchy deploys bin/ as copies, not symlinks. Editing a script here has no
+  effect on the command you type until it is copied again. Run this after an
+  edit, or use scripts/dev-run.sh to run straight from the checkout instead.
+
+This never starts a background process and installs nothing.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h | --help | help)
+      usage
+      exit 0
+      ;;
+    --check)
+      MODE=check
+      ;;
+    --dry-run)
+      MODE=dry-run
+      ;;
+    --all)
+      MODE=all
+      ;;
+    --)
+      shift
+      ONLY+=("$@")
+      break
+      ;;
+    -*)
+      printf 'sync-commands: unknown option %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      ONLY+=("$1")
+      ;;
+  esac
+  shift
+done
+
+# A bare name may be given either way round.
+if [[ ${#ONLY[@]} -gt 0 && -z ${ONLY[0]:-} ]]; then
+  ONLY=()
+fi
+for i in "${!ONLY[@]}"; do
+  name="${ONLY[$i]}"
+  if [[ $name != fedarchy* && -f "$SOURCE_DIR/fedarchy-$name" ]]; then
+    ONLY[$i]="fedarchy-$name"
+  fi
+done
+
+[[ -d $SOURCE_DIR ]] || { printf 'sync-commands: no bin/ in %s\n' "$PROJECT_ROOT" >&2; exit 1; }
+[[ -d $TARGET_DIR ]] || mkdir -p "$TARGET_DIR"
+
+changed=0
+copied=0
+
+for src in "$SOURCE_DIR"/*; do
+  [[ -f $src && -x $src ]] || continue
+
+  name="$(basename "$src")"
+
+  # Restrict to an explicit list when one was given.
+  if [[ ${#ONLY[@]} -gt 0 ]]; then
+    keep=0
+    for want in "${ONLY[@]}"; do
+      [[ $name == "$want" ]] && keep=1
+    done
+    ((keep)) || continue
+  fi
+
+  dst="$TARGET_DIR/$name"
+
+  # Already identical? Skip unless --all was asked for. Comparing content rather
+  # than mtime keeps a fresh checkout from looking stale.
+  if [[ -f $dst ]] && cmp -s "$src" "$dst"; then
+    if [[ $MODE == all ]]; then
+      :
+    else
+      continue
+    fi
+  fi
+
+  changed=$((changed + 1))
+  state="update"
+  [[ -e $dst ]] || state="install"
+
+  case "$MODE" in
+    check)
+      printf '  %-8s %s -> %s\n' "$state" "$src" "$dst"
+      ;;
+    dry-run)
+      printf '  %-8s install -m 755 %q %q\n' "$state" "$src" "$dst"
+      ;;
+    *)
+      install -m 755 "$src" "$dst"
+      copied=$((copied + 1))
+      printf '  %-8s %s\n' "$state" "$name"
+      ;;
+  esac
+done
+
+case "$MODE" in
+  check)
+    if ((changed == 0)); then
+      printf 'All commands are already in sync with %s\n' "$SOURCE_DIR"
+    else
+      printf '\n%d command(s) differ. Run: sync-commands\n' "$changed"
+    fi
+    ;;
+  dry-run)
+    ((changed == 0)) && printf 'Nothing to copy\n'
+    ;;
+  *)
+    if ((copied == 0)); then
+      printf 'Everything already in sync.\n'
+    else
+      printf '\nSynced %d command(s) into %s\n' "$copied" "$TARGET_DIR"
+    fi
+    ;;
+esac
