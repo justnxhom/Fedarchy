@@ -1,0 +1,351 @@
+#!/bin/bash
+
+# fedarchy:summary=Manage packages through the system DNF5 package manager
+# fedarchy:args=<add|remove|search|info|list|history|undo|redo|provides|check|clean|repoquery> [args...]
+# fedarchy:examples=fedarchy-pkg add firefox | fedarchy-pkg remove firefox | fedarchy-pkg search neovim | fedarchy-pkg history
+# fedarchy:hidden=true
+#
+# Fedarchy does NOT implement a package manager. This command is a thin,
+# predictable front end: it decides which native `dnf5` subcommand to run and
+# how to ask for confirmation, then hands the real work to DNF5. Dependency
+# resolution, repository metadata, downloads and transaction execution all stay
+# inside DNF5. There is no local package database and no second solver here.
+#
+# Anything this wrapper does not recognise is passed straight through to DNF5,
+# so native functionality keeps working and an unknown word is never quietly
+# reinterpreted as something else.
+
+set -euo pipefail
+
+readonly FEDARCHY_PKG_SELF="${BASH_SOURCE[0]}"
+
+# ---------------------------------------------------------------- dnf5 lookup
+
+# Resolve the package manager once, at the top, rather than assuming a name.
+# Fedora 44 ships `dnf5`; older Fedora has only `dnf`. If neither is present we
+# stop with an actionable message instead of silently doing nothing.
+fedarchy_pkg_resolve_dnf() {
+  if [[ -n ${FEDARCHY_DNF_BIN:-} ]]; then
+    printf '%s' "$FEDARCHY_DNF_BIN"
+    return 0
+  fi
+
+  local candidate
+  for candidate in dnf5 dnf; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  cat >&2 <<'ERR'
+fedarchy-pkg: no supported package manager found.
+
+Fedarchy delegates all package work to DNF. Neither `dnf5` nor `dnf` is on
+this system's PATH.
+
+Install DNF5 and try again:
+
+    sudo dnf5 install dnf5
+
+If DNF5 is installed somewhere unusual, point Fedarchy at it explicitly:
+
+    FEDARCHY_DNF_BIN=/path/to/dnf5 fedarchy-pkg search neovim
+ERR
+  return 127
+}
+
+DNF_BIN="$(fedarchy_pkg_resolve_dnf)" || exit $?
+
+# ------------------------------------------------------------ privilege policy
+
+# Only genuinely mutating operations are escalated. Reads stay usable as a
+# normal user, which is what makes `search`/`info`/`history` convenient.
+fedarchy_pkg_is_mutating() {
+  case "${1:-}" in
+    add | install | remove | erase | uninstall | update | upgrade | \
+      downgrade | distro-sync | swap | reinstall | autoremove | mark | undo | redo | rollback)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Run a mutating dnf5 call under sudo, preserving the backend's exit status and
+# its stderr. `exec` is deliberately not used: we still need to run the caller's
+# post-checks afterwards.
+fedarchy_pkg_privileged() {
+  local -a cmd=("$@")
+
+  # Already root: nothing to escalate.
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    "${cmd[@]}"
+    return $?
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    printf 'fedarchy-pkg: this operation needs root and sudo is not installed.\n' >&2
+    return 1
+  fi
+
+  sudo -- "${cmd[@]}"
+}
+
+# --------------------------------------------------------------- confirmation
+
+# Ask before anything mutating. Policy:
+#   * noninteractive (no TTY) -> proceed unattended, DNF5's own --assumeno and
+#     any prompting rules still apply;
+#   * -y / --yes on the command line -> skip the prompt;
+#   * otherwise -> prompt, and a non-"yes" answer aborts without running.
+fedarchy_pkg_confirm() {
+  local prompt="$1"
+
+  # A single -y / --assumeyes anywhere in the caller's arguments suppresses the
+  # prompt. It has already been filtered out of the argument list by the caller,
+  # so it is not forwarded here.
+  local yes=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -y | --yes | --assumeyes) yes=1 ;;
+    esac
+  done
+
+  if ((yes)); then return 0; fi
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    # Unattended: do not block on a prompt nobody can answer.
+    return 0
+  fi
+
+  local answer=""
+  printf '%s [y/N] ' "$prompt" >&2
+  read -r answer || answer=""
+  case "$answer" in
+    y | Y | yes | Yes | YES)
+      return 0
+      ;;
+    *)
+      printf 'Aborted. Nothing was changed.\n' >&2
+      return 130
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------ previews
+
+# Preview a transaction by asking DNF5 itself to plan it and then decline.
+# This is deliberately NOT a local calculation: the plan shown is DNF5's own,
+# produced by its solver, so it cannot drift from what would really happen.
+#
+# It is still only a plan. A preview is not a guarantee: package state,
+# repository metadata or network conditions can change between the preview and
+# the real run.
+fedarchy_pkg_preview() {
+  local -a dnf_args=("$@")
+
+  printf '\n'
+  printf 'Transaction preview (produced by %s; not a guarantee of success):\n' "$DNF_BIN"
+  printf -- '--------------------------------------------------------------\n'
+
+  if fedarchy_pkg_privileged "$DNF_BIN" "${dnf_args[@]}" --assumeno; then
+    printf '\nAborted. Nothing was changed.\n' >&2
+    return 130
+  fi
+
+  # dnf5 exits non-zero for --assumeno, which is expected, not an error here.
+  return 0
+}
+
+# --------------------------------------------------------------------- usage
+
+fedarchy_pkg_usage() {
+  cat <<'USAGE'
+fedarchy-pkg - package management, delegated to DNF5
+
+Usage:
+  fedarchy-pkg add <package>...          Install packages
+  fedarchy-pkg remove <package>...       Remove packages
+  fedarchy-pkg search <term>...          Search for packages
+  fedarchy-pkg info <package>...         Show package details
+  fedarchy-pkg list [--installed|...]    List packages
+  fedarchy-pkg provides <file>...        Find what provides a file
+  fedarchy-pkg history [list|info <id>]  Show transaction history
+  fedarchy-pkg undo <transaction-id>     Revert a transaction
+  fedarchy-pkg redo <transaction-id>     Re-apply a transaction
+
+  fedarchy-pkg <anything-else> ...       Passed straight through to dnf5
+
+Read-only commands (search, info, list, provides, history) do not need root.
+Modifying commands ask for root on their own.
+
+Examples:
+  fedarchy-pkg add firefox
+  fedarchy-pkg remove firefox
+  fedarchy-pkg search neovim
+  fedarchy-pkg info neovim
+  fedarchy-pkg history
+  fedarchy-pkg history info 42
+  sudo fedarchy-pkg undo 42
+
+Native access:
+  Any unrecognised subcommand is forwarded to dnf5 unchanged, so dnf5's own
+  options keep working: `fedarchy-pkg repoquery --duplicates`.
+
+Limits:
+  Not every dnf5 transaction can be reversed. `undo`/`redo` are DNF5's own
+  operations and depend on what that transaction did; DNF5 refuses some of
+  them and its refusal is reported as-is.
+USAGE
+}
+
+# ---------------------------------------------------------------------- main
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    fedarchy_pkg_usage
+    return 0
+  fi
+
+  local sub="$1"
+  shift
+
+  case "$sub" in
+    -h | --help | help)
+      fedarchy_pkg_usage
+      return 0
+      ;;
+    --version)
+      printf 'fedarchy-pkg (Fedarchy) — package management via %s\n' "$DNF_BIN"
+      "$DNF_BIN" --version
+      return $?
+      ;;
+  esac
+
+  local -a native=()
+  local mutating=0
+  local action=""
+
+  case "$sub" in
+    add | install)
+      action="install"
+      native=(install)
+      mutating=1
+      ;;
+    remove | erase | uninstall | rm)
+      action="remove"
+      native=(remove)
+      mutating=1
+      ;;
+    search)
+      action="search"
+      native=(search)
+      ;;
+    info | show)
+      action="info"
+      native=(info)
+      ;;
+    list)
+      action="list"
+      native=(list)
+      ;;
+    provides | whatprovides)
+      action="provides"
+      native=(provides)
+      ;;
+    history)
+      action="history"
+      native=(history)
+      # `dnf5 history` on its own prints nothing useful — it needs `list`,
+      # `info <id>` or a mutating verb. Default to `list` so the friendly form
+      # in the usage text actually works.
+      case "${1:-}" in
+        list | info)
+          native=(history)
+          ;;
+        "")
+          native=(history list)
+          ;;
+        undo | redo | rollback)
+          mutating=1
+          native=(history "$1")
+          shift
+          ;;
+        *)
+          native=(history "$1")
+          ;;
+      esac
+      ;;
+    undo | redo | rollback)
+      action="$sub"
+      native=(history "$sub")
+      mutating=1
+      ;;
+    check)
+      action="check"
+      native=(check)
+      ;;
+    clean)
+      action="clean"
+      native=(clean)
+      ;;
+    repoquery)
+      action="repoquery"
+      native=(repoquery)
+      ;;
+    *)
+      # Passthrough. `fedarchy-pkg status`, `fedarchy-pkg groups`, and every
+      # other dnf5 subcommand reach dnf5 untouched. An unknown word is never
+      # rewritten into a different operation.
+      exec "$DNF_BIN" "$sub" "$@"
+      ;;
+  esac
+
+  # Split the caller's arguments into the ones we interpret and the ones DNF5
+  # should see. Only `--yes` is ours: it suppresses our prompt and is not passed
+  # on. Everything else reaches DNF5 verbatim, native flags included.
+  local -a dnf_extra=()
+  local -a forward=()
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      # Ours only: suppresses the confirmation prompt. It is deliberately NOT
+      # forwarded, because DNF5's own --assumeyes would bypass the very plan
+      # review this wrapper asks the user to read.
+      -y | --yes | --assumeyes)
+        forward+=("$arg")
+        ;;
+      *)
+        dnf_extra+=("$arg")
+        ;;
+    esac
+  done
+
+  if ((mutating)); then
+    # Nothing to act on.
+    if [[ $sub != undo && $sub != redo && $sub != rollback ]] &&
+      [[ ${#dnf_extra[@]} -eq 0 ]]; then
+      printf 'fedarchy-pkg: %s needs at least one package or transaction id.\n' "$action" >&2
+      return 2
+    fi
+    if [[ $sub == undo || $sub == redo || $sub == rollback ]] && [[ ${#dnf_extra[@]} -eq 0 ]]; then
+      printf 'fedarchy-pkg: %s needs a transaction id (see `fedarchy-pkg history`).\n' "$sub" >&2
+      return 2
+    fi
+
+    fedarchy_pkg_confirm "Proceed with ${action}? (DNF5 will show the plan)" "${forward[@]}"
+  fi
+
+  if ((mutating)); then
+    fedarchy_pkg_privileged "$DNF_BIN" "${native[@]}" "${dnf_extra[@]}"
+  else
+    # Read-only: run as the current user so `search`, `info`, `list`,
+    # `provides` and a plain `history` never prompt for a password.
+    "$DNF_BIN" "${native[@]}" "${dnf_extra[@]}"
+  fi
+}
+
+main "$@"

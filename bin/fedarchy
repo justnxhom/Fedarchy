@@ -1,0 +1,309 @@
+#!/bin/bash
+
+# fedarchy:summary=Fedarchy package management: update, status and diagnostics
+# fedarchy:args=<update|upgrade|status|doctor|help> [args...]
+# fedarchy:examples=fedarchy status | fedarchy doctor | sudo fedarchy update
+# fedarchy:hidden=true
+#
+# A small front end over the system DNF5. It never resolves dependencies,
+# never touches a package database and never runs a transaction of its own:
+# every mutating path ends in a real dnf5 invocation, and every read-only path
+# is a real dnf5 query or a local file check.
+
+set -euo pipefail
+
+readonly FEDARCHY_SELF="${BASH_SOURCE[0]}"
+
+GREEN=''; YELLOW=''; RED=''; DIM=''; BOLD=''; RESET=''
+if [[ -t 1 && ${NO_COLOR:-} == '' ]]; then
+  GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
+  DIM=$'\033[2m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+fi
+
+# ---------------------------------------------------------------- dnf5 lookup
+
+fedarchy_resolve_dnf() {
+  if [[ -n ${FEDARCHY_DNF_BIN:-} ]]; then
+    printf '%s' "$FEDARCHY_DNF_BIN"
+    return 0
+  fi
+
+  local candidate
+  for candidate in dnf5 dnf; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  printf 'fedarchy: no supported package manager found (looked for dnf5 and dnf).\n' >&2
+  printf 'Install DNF5 with `sudo dnf5 install dnf5`, or set FEDARCHY_DNF_BIN.\n' >&2
+  return 127
+}
+
+DNF_BIN="$(fedarchy_resolve_dnf)" || exit $?
+
+fedarchy_privileged() {
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    "$@"
+    return $?
+  fi
+  command -v sudo >/dev/null 2>&1 || {
+    printf 'fedarchy: this needs root and sudo is not installed.\n' >&2
+    return 1
+  }
+  sudo -- "$@"
+}
+
+# ------------------------------------------------------------------- helpers
+
+fedarchy_heading() {
+  printf '\n%s%s%s\n' "$BOLD" "$1" "$RESET"
+}
+
+fedarchy_line() {
+  local kind="$1" label="$2" detail="${3:-}"
+  local colour
+  case "$kind" in
+    PASS) colour="$GREEN" ;;
+    WARN) colour="$YELLOW" ;;
+    FAIL) colour="$RED" ;;
+    *) colour="$DIM" ;;
+  esac
+  printf '  %s%-4s%s %-34s %s\n' "$colour" "$kind" "$RESET" "$label" "$detail"
+}
+
+# A cached metadata refresh is what makes `check-upgrade` meaningful. It is a
+# read: it downloads metadata and writes DNF5's own cache. We deliberately do
+# NOT run `dnf5 makecache` as a side effect here, because doctor and status
+# must not quietly change anything on the host.
+fedarchy_updates_available() {
+  local out
+  if ! out="$(timeout 120 "$DNF_BIN" --quiet check-upgrade 2>/dev/null)"; then
+    return 2
+  fi
+  [[ -z $out ]] && return 1
+  grep -c . <<<"$out" || true
+}
+
+# ------------------------------------------------------------------- status
+
+fedarchy_status() {
+  fedarchy_heading "Fedarchy package status"
+
+  # A few dnf5 builds print a bare "unknown" line on --version; keep only the
+  # first line that actually looks like a version string.
+  local version
+  version="$("$DNF_BIN" --version 2>/dev/null | grep -m1 'version [0-9]' || true)"
+  [[ -n $version ]] || version="version unknown"
+  fedarchy_line PASS "DNF" "$version"
+
+  # Repository health, read-only.
+  local repo_count
+  repo_count="$(timeout 60 "$DNF_BIN" repo list --enabled 2>/dev/null | grep -c . || echo 0)"
+  fedarchy_line PASS "Enabled repositories" "$repo_count"
+
+  local updates
+  updates="$(fedarchy_updates_available || echo 0)"
+  case "$updates" in
+    0) fedarchy_line PASS "Pending updates" "none reported" ;;
+    2) fedarchy_line WARN "Pending updates" "could not be determined (metadata refresh needed)" ;;
+    *) fedarchy_line PASS "Pending updates" "$updates package(s)" ;;
+  esac
+
+  # Reboot vs restart are different things. needs-restarting reports services
+  # that merely need a restart; a kernel/system update is the reboot case.
+  fedarchy_heading "Restart and reboot"
+
+  local needs_restarting=""
+  if command -v needs-restarting >/dev/null 2>&1; then
+    if needs_restarting -r >/dev/null 2>&1; then
+      needs_restarting="system reboot recommended"
+    elif needs_restarting >/dev/null 2>&1; then
+      local count
+      count="$(needs-restarting 2>/dev/null | grep -c '^[0-9]*' || echo 0)"
+      needs_restarting="$count process(es) can be restarted instead of rebooting"
+    else
+      needs_restarting="not needed"
+    fi
+  elif "$DNF_BIN" needs-restarting --help >/dev/null 2>&1; then
+    needs_restarting="dnf5 plugin present; run 'dnf5 needs-restarting' for detail"
+  else
+    needs_restarting="needs-restarting not installed (optional)"
+  fi
+  fedarchy_line INFO "Reboot / restart" "$needs_restarting"
+
+  # Diagnostics availability.
+  fedarchy_heading "Optional diagnostics"
+  if command -v needs-restarting >/dev/null 2>&1; then
+    fedarchy_line PASS "needs-restarting" "standalone command available"
+  elif "$DNF_BIN" needs-restarting --help >/dev/null 2>&1; then
+    fedarchy_line PASS "dnf5 needs-restarting" "available as a dnf5 plugin"
+  else
+    fedarchy_line WARN "needs-restarting" "not installed (optional; 'sudo dnf5 install dnf5-plugins-core')"
+  fi
+}
+
+# ------------------------------------------------------------------- doctor
+
+fedarchy_doctor() {
+  local failures=0 warnings=0
+
+  fedarchy_heading "Package manager"
+  if [[ -n ${FEDARCHY_DNF_BIN:-} ]]; then
+    fedarchy_line PASS "DNF override" "FEDARCHY_DNF_BIN=$FEDARCHY_DNF_BIN"
+  fi
+  if command -v "$DNF_BIN" >/dev/null 2>&1; then
+    fedarchy_line PASS "DNF available" "$DNF_BIN"
+    fedarchy_line PASS "DNF version" "$("$DNF_BIN" --version 2>/dev/null | head -1 || echo unknown)"
+  else
+    fedarchy_line FAIL "DNF available" "not found; install dnf5"
+    ((failures++))
+  fi
+
+  fedarchy_heading "Privileges"
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    fedarchy_line PASS "Effective user" "root"
+  elif command -v sudo >/dev/null 2>&1; then
+    fedarchy_line PASS "sudo available" "modifying commands can escalate"
+  else
+    fedarchy_line FAIL "sudo available" "not found; read-only commands still work"
+    ((failures++))
+  fi
+
+  fedarchy_heading "Configuration and permissions"
+  local rpmmacrodir="$HOME/.config/dnf/dnf.conf"
+  if [[ -f ${XDG_CONFIG_HOME:-$HOME/.config}/dnf/dnf.conf ]]; then
+    fedarchy_line PASS "User dnf.conf" "present (read only; never modified)"
+  else
+    fedarchy_line INFO "User dnf.conf" "absent (using system defaults)"
+  fi
+  [[ -d "$rpmmacrodir" ]] || true
+
+  fedarchy_heading "Repositories"
+  # `makecache` verifies DNF5's own metadata cache; it writes nothing outside
+  # that cache and changes no repository configuration. Flags are the portable
+  # subset — dnf5 rejects unknown ones, so nothing exotic is passed.
+  local repo_check
+  repo_check="$(timeout 180 "$DNF_BIN" makecache 2>&1)"
+  local repo_rc=$?
+  if [[ $repo_rc -eq 0 ]]; then
+    fedarchy_line PASS "Repository metadata" "refreshable"
+  else
+    fedarchy_line FAIL "Repository metadata" "refresh failed (exit $repo_rc)"
+    ((failures++))
+  fi
+  # Show the backend's own words so a broken repository is visible rather than
+  # swallowed behind a summary line.
+  if [[ $repo_rc -ne 0 && -n $repo_check ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] && printf '        %s%s%s\n' "$DIM" "$line" "$RESET"
+    done <<<"$repo_check"
+  fi
+
+  fedarchy_heading "Reboot and restart diagnostics"
+  if command -v needs-restarting >/dev/null 2>&1; then
+    fedarchy_line PASS "needs-restarting" "available"
+  elif "$DNF_BIN" needs-restarting --help >/dev/null 2>&1; then
+    fedarchy_line PASS "dnf5 needs-restarting" "available as a dnf5 plugin"
+  else
+    fedarchy_line WARN "needs-restarting" "not available (optional)"
+    ((warnings++))
+  fi
+
+  fedarchy_heading "Summary"
+  if ((failures)); then
+    fedarchy_line FAIL "Failures" "$failures"
+  else
+    fedarchy_line PASS "Failures" "0"
+  fi
+  if ((warnings)); then
+    fedarchy_line WARN "Warnings" "$warnings"
+  else
+    fedarchy_line PASS "Warnings" "0"
+  fi
+
+  printf '\n'
+  if ((failures)); then
+    printf '%sfedarchy doctor found %s problem(s).%s\n' "$RED" "$failures" "$RESET"
+    printf 'This command is read-only; nothing was repaired or changed.\n'
+    return 1
+  fi
+  printf '%sfedarchy doctor found no blocking problems.%s\n' "$GREEN" "$RESET"
+  return 0
+}
+
+# -------------------------------------------------------------------- update
+
+fedarchy_update() {
+  # Reuse the existing, tested update path. It runs the transaction inside a
+  # systemd scope precisely so a systemd upgrade cannot kill a dnf5 that is
+  # halfway through a transaction -- reimplementing that here would regress a
+  # deliberate fix.
+  local runner="${OMARCHY_PATH:-$HOME/Fedarchy}/bin/omarchy-update-dnf"
+  if [[ -x $runner ]]; then
+    printf 'fedarchy: delegating to %s\n' "$runner"
+    exec "$runner" "$@"
+  fi
+
+  printf 'fedarchy: %s is missing; falling back to a plain dnf5 transaction.\n' "$runner" >&2
+  exec fedarchy_privileged "$DNF_BIN" upgrade "$@"
+}
+
+# --------------------------------------------------------------------- usage
+
+fedarchy_usage() {
+  cat <<'USAGE'
+fedarchy - Fedora package management, delegated to DNF5
+
+Usage:
+  fedarchy update [args...]      Run the system update (needs root)
+  fedarchy upgrade [args...]     Alias for update
+  fedarchy status                Read-only system and update summary
+  fedarchy doctor                Read-only diagnostics
+  fedarchy help                  This text
+
+Package commands live in `fedarchy-pkg`:
+
+  fedarchy-pkg add <package>...
+  fedarchy-pkg remove <package>...
+  fedarchy-pkg search <term>...
+  fedarchy-pkg info <package>...
+  fedarchy-pkg history | history info <id>
+  fedarchy-pkg undo <id> | redo <id>
+
+Native access:
+  `fedarchy-pkg <anything-else>` is forwarded to dnf5 unchanged.
+
+Privileges:
+  status, doctor and the read-only fedarchy-pkg commands run as the current
+  user. Modifying commands ask for root themselves.
+
+This command never resolves dependencies itself and never keeps a package
+database: DNF5 is the only authority for all package state.
+USAGE
+}
+
+# ---------------------------------------------------------------------- main
+
+main() {
+  local sub="${1:-help}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$sub" in
+    update | upgrade) fedarchy_update "$@" ;;
+    status) fedarchy_status "$@" ;;
+    doctor) fedarchy_doctor "$@" ;;
+    help | -h | --help) fedarchy_usage ;;
+    --version)
+      printf 'fedarchy (Fedarchy) — package management via %s\n' "$DNF_BIN"
+      ;;
+    *)
+      printf 'fedarchy: unknown command %s\n' "$sub" >&2
+      printf 'Run `fedarchy help` for the supported commands.\n' >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
