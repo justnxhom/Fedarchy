@@ -19,14 +19,27 @@ repo="$1"
 [[ $repo == */* ]] || fail "COPR must be in owner/name form (got: $repo)"
 [[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "Invalid COPR name: $repo"
 
-# COPR project slugs are always lowercase; dnf5 rejects mixed case.
-repo=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+# Case is preserved. COPR project names are case sensitive -- lionheartp/Hyprland
+# exists and lionheartp/hyprland does not -- so lowercasing here rewrites a valid
+# slug into a nonexistent one and the enable fails with a 404. The owner/name
+# regex above already accepts mixed case.
 
-if dnf5 repolist --enabled 2>/dev/null | grep -qF "copr:"; then
-  if dnf5 repolist --enabled 2>/dev/null | grep -qiF "$repo"; then
-    echo "COPR $repo is already enabled."
-    exit 0
-  fi
+# dnf5 reports a repository id as copr:<host>:<owner>:<name>, separated by colons
+# rather than the slash the user typed, so the slash form never appears in
+# repolist output at all. Match the last two colon-separated fields exactly
+# instead: that keeps a non-default Copr hub working, and stops atim/starship
+# from being reported as already enabled when only atim/starship-extra is.
+slug="${repo//\//:}"
+if dnf5 repolist --enabled 2>/dev/null |
+  awk -v slug="$slug" '
+    $1 ~ /^copr:/ {
+      n = split($1, part, ":")
+      if (part[n-1] ":" part[n] == slug) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  '; then
+  echo "COPR $repo is already enabled."
+  exit 0
 fi
 
 source omarchy-sudo-keepalive 2>/dev/null || true

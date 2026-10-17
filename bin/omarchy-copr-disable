@@ -15,5 +15,8 @@ repo="$1"
 [[ $repo == */* ]] || fail "COPR must be in owner/name form (got: $repo)"
 
 source omarchy-sudo-keepalive 2>/dev/null || true
-omarchy-update-lock run-wait sudo dnf5 copr disable "$repo"
+  # -y: these are invoked from submenus and scripts, where there is nobody to
+  # answer a confirmation prompt. copr-add already passed it; match it here so
+  # enabling, disabling and removing cannot block waiting for a keystroke.
+omarchy-update-lock run-wait sudo dnf5 copr disable -y "$repo"
 echo "Disabled COPR: $repo"
