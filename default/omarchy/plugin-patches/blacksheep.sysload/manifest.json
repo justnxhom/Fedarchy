@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "blacksheep.sysload",
+  "name": "System Load",
+  "version": "1.0.0",
+  "author": "Jon",
+  "license": "MIT",
+  "description": "One dial for how hard the machine is working, and the numbers behind it on hover or click",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "System Load",
+    "description": "A single strain gauge driven by whichever of CPU, memory, disk I/O or temperature has run out first, with per-resource meters, rates and top processes in the panel, with an option to pin the gauge to one metric.",
+    "category": "System",
+    "aliases": [
+      "sysload",
+      "system-load",
+      "strain"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "style": "arc",
+      "interval": 2,
+      "idleInterval": 4,
+      "metric": "auto"
+    },
+    "schema": [
+      {
+        "key": "style",
+        "type": "string",
+        "label": "Gauge style",
+        "description": "arc for a 270-degree dial, bar for a flat fill"
+      },
+      {
+        "key": "interval",
+        "type": "number",
+        "label": "Sample interval (open)",
+        "description": "Seconds between samples while the panel is open; the panel also walks the process table at this rate"
+      },
+      {
+        "key": "idleInterval",
+        "type": "number",
+        "label": "Sample interval (closed)",
+        "description": "Seconds between samples while only the bar gauge is visible"
+      },
+      {
+        "key": "metric",
+        "type": "enum",
+        "label": "Metric shown on the gauge",
+        "description": "Auto follows whichever of CPU, memory, disk I/O or heat is highest.",
+        "options": [
+          "auto",
+          "cpu",
+          "memory",
+          "io",
+          "thermal"
+        ],
+        "defaultValue": "auto"
+      }
+    ]
+  }
+}
