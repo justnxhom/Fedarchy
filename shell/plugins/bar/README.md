@@ -27,6 +27,7 @@ Example `shell.json` (bar subtree only shown):
     "position": "top",
     "transparent": false,
     "centerAnchor": "omarchy.clock",
+    "centerOffset": 0,
     "layout": {
       "left": [
         { "id": "omarchy.menu" },
@@ -47,6 +48,8 @@ Example `shell.json` (bar subtree only shown):
 ```
 
 `centerAnchor` pins one center module to the exact horizontal/vertical center and flanks others around it. Set to an empty string to disable anchoring (the center list is centered as a group).
+
+`centerOffset` shifts the center section along the bar's long axis, in pixels, so the modules can sit where they look centred rather than where they measure centred. Negative moves left on a horizontal bar, positive moves down on a vertical one. This is aimed at laptop panels, where a camera at the top edge makes the geometric centre read as slightly off; a value in the tens of pixels is normal. It defaults to `0`, and a value that is not a finite number is ignored rather than collapsing the section.
 
 ## Module catalogue
 

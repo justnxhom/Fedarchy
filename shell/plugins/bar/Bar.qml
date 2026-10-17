@@ -50,6 +50,11 @@ Item {
   })
   property var layoutConfig: fallbackBarConfig.layout
   property string centerAnchor: ""
+  // Nudges the centre section along the bar's long axis, in pixels. A laptop
+  // screen with a camera at the top edge reads as optically centred when the
+  // geometric centre is offset slightly; negative moves left on a horizontal
+  // bar. Set `centerOffset` in the bar config.
+  property int centerOffset: 0
   property bool requestedTransparent: false
   property bool useTransparentForeground: false
   property bool transparent: false
@@ -584,6 +589,10 @@ Item {
     position = normalizePosition(config.position)
     setRequestedTransparency(config.transparent === true)
     centerAnchor = Util.canonicalWidgetId(config.centerAnchor || "")
+    // Finite and rounded: a stray string or null in shell.json must not
+    // produce NaN and silently collapse the centre section.
+    var rawOffset = Number(config.centerOffset)
+    centerOffset = isFinite(rawOffset) ? Math.round(rawOffset) : 0
 
     // layoutEntries feeds plain JS arrays to the module Repeaters, and QML
     // cannot diff those: reassigning layoutConfig rebuilds every widget on
@@ -1560,6 +1569,7 @@ Item {
           entries: centerRoot.entries
           region: "center"
           anchors.centerIn: parent
+          anchors.horizontalCenterOffset: root.centerOffset
         }
 
         ModuleList {
@@ -1576,6 +1586,7 @@ Item {
           entry: centerRoot.anchorEntry
           region: "center"
           anchors.centerIn: parent
+          anchors.horizontalCenterOffset: root.centerOffset
         }
 
         ModuleList {
@@ -1605,6 +1616,7 @@ Item {
           entries: centerRoot.entries
           region: "center"
           anchors.centerIn: parent
+          anchors.verticalCenterOffset: root.centerOffset
         }
 
         ModuleList {
@@ -1621,6 +1633,7 @@ Item {
           entry: centerRoot.anchorEntry
           region: "center"
           anchors.centerIn: parent
+          anchors.verticalCenterOffset: root.centerOffset
         }
 
         ModuleList {
