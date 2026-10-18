@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# omarchy:summary=Stop the Fedarchy shell, then bring it back
+# omarchy:examples=omarchy kill shell
+# omarchy:examples=omarchy-kill-shell --leave-dead
+
+# Stopping the shell is not the same as restarting it, and the difference is not
+# obvious from the outside.
+#
+# quickshell does not run on its own. omarchy-launch-shell supervises it in a
+# loop and treats a clean exit as "the session is over": the loop exits instead
+# of relaunching. A shell stopped through its IPC kill exits cleanly, so the
+# launcher exits with it. Nothing restarts either of them -- the bar and the
+# menus stay gone until omarchy-restart-shell is run by hand.
+#
+# So a script that only kills is a script that quietly takes the desktop down.
+# This one brings the shell back by default, and makes stopping it for real an
+# explicit choice.
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Stop the Fedarchy shell.
+
+Usage:
+  omarchy-kill-shell [options]
+
+Options:
+  --leave-dead   Stop the shell and do not bring it back. The bar and menus
+                 will stay down until you run: omarchy-restart-shell
+  -h, --help     This text.
+
+By default the shell is stopped and then restarted, which is what you almost
+always want. The restart is deliberate rather than a side effect, because the
+supervisor treats a clean shell exit as the end of the session and will not
+relaunch on its own.
+USAGE
+}
+
+leave_dead=0
+
+while (( $# > 0 )); do
+  case "$1" in
+    --leave-dead) leave_dead=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+export OMARCHY_PATH="${OMARCHY_PATH:-$HOME/Fedarchy}"
+SHELL_CONFIG="${OMARCHY_PATH%/}/shell"
+
+if [[ ! -f $SHELL_CONFIG/shell.qml ]]; then
+  echo "Fedarchy shell config not found: $SHELL_CONFIG" >&2
+  exit 78
+fi
+
+if ! pgrep -x quickshell >/dev/null 2>&1; then
+  echo "The Fedarchy shell is not running."
+  exit 0
+fi
+
+echo "Stopping the Fedarchy shell..."
+
+# The supported way to stop it. Targeting by config path rather than by pid
+# means this cannot land on an unrelated quickshell -- and cannot miss the
+# right one, the way matching a command line can.
+if ! timeout 30 quickshell kill -p "$SHELL_CONFIG" --any-display >/dev/null 2>&1; then
+  echo "Could not reach the shell over IPC." >&2
+  exit 1
+fi
+
+# Confirm it actually stopped. quickshell and its launcher unwind asynchronously,
+# and reporting success while it is still up would be a lie.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pgrep -x quickshell >/dev/null 2>&1 || break
+  sleep 0.5
+done
+
+if pgrep -x quickshell >/dev/null 2>&1; then
+  echo "The shell is still running after the stop request." >&2
+  exit 1
+fi
+
+if (( leave_dead )); then
+  echo "Shell stopped. It will stay down."
+  echo "Bring it back with: omarchy-restart-shell"
+  exit 0
+fi
+
+echo "Stopped. Starting it again..."
+if ! omarchy-restart-shell; then
+  echo "The shell stopped but did not come back." >&2
+  echo "Start it with: omarchy-restart-shell" >&2
+  exit 1
+fi
+
+# Restart-shell returns once it has handed off, which is not the same as the
+# shell being up. Confirm it answers before claiming success.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if [[ $(omarchy-shell shell ping 2>&1 | head -1) == "ok" ]]; then
+    echo "Shell is back up."
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "The shell was restarted but is not answering yet." >&2
+echo "Check it with: omarchy-shell shell ping" >&2
+exit 1
