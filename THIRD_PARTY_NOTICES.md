@@ -120,7 +120,7 @@ in a repository checkout. Nothing is documented as being available from them.
 `logo.txt` contains an ASCII-art wordmark for the project name. It is an
 original text asset created for this repository.
 
-### 2.5 Konobeat — vendored plugin
+### 2.5 Konobeat — vendored plugin, **not** an Omarchy component
 
 | Field | Value |
 |---|---|
@@ -132,12 +132,22 @@ original text asset created for this repository.
 | **Required notice** | `Copyright (c) 2026 Alec Xu` and `Copyright (c) David Heinemeier Hansson` (Omarchy-derived code) |
 | **Verification status** | **Verified 2026-10-19** — the upstream `LICENSE` file was read directly from the installed checkout at revision `d0d0683` and carried over unchanged, and the manifest, the QML and the Python helper were taken from that same revision |
 
+**This plugin did not come from upstream Omarchy.** It is not part of what
+Omarchy ships, it is not a component of this project's Omarchy port, and it
+was not written for this project. It is a third-party plugin by Alec Xu,
+published separately as the Konobeat plugin, and vendored here.
+
+The second copyright holder in the notice above is the plugin author's own
+use of Omarchy code. It describes the plugin's relationship to Omarchy, not
+the plugin's relationship to this project. Fedarchy did not write the plugin
+and adds nothing to it beyond the changes recorded in
+[`shell/plugins/konobeat/NOTICE.md`](shell/plugins/konobeat/NOTICE.md). The
+upstream project remains the author of the work.
+
 The plugin is vendored rather than installed from its upstream repository so
 that the visualizer's appearance can be read from a configuration file the
 user owns, and so that the project can keep the plugin in step with the rest
-of the shell. The changes made to it are listed in
-[`shell/plugins/konobeat/NOTICE.md`](shell/plugins/konobeat/NOTICE.md). The
-upstream project remains the author of the work.
+of the shell.
 
 ---
 

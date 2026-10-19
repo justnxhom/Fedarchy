@@ -4,9 +4,17 @@ This plugin is **vendored third-party code**, carried into the Fedarchy
 repository so that the visualizer's appearance can be configured from a file
 the user owns.
 
+**It is not an Omarchy component.** It did not come from the upstream Omarchy
+repository, it is not part of what upstream Omarchy ships, and it was not
+written for this project. Everything in this directory other than the changes
+listed below is the work of **Alec Xu**, published as the Konobeat plugin.
+Fedarchy is an unofficial derivative of *Omarchy* — the desktop shell
+framework this plugin is written against — which is a different thing
+entirely from this plugin.
+
 | Field | Value |
 |---|---|
-| **Upstream project** | Konobeat |
+| **Upstream project** | Konobeat, from the Konochi plugin series |
 | **Author** | Alec Xu |
 | **Upstream repository** | <https://github.com/xvvhang/omarchy-konobeat-plugin> |
 | **Licence** | MIT — see [`LICENSE`](LICENSE) in this directory |
@@ -14,10 +22,11 @@ the user owns.
 | **Upstream revision** | `d0d0683` ("Add marketplace preview screenshot and README preview") |
 
 The upstream licence text is reproduced verbatim in [`LICENSE`](LICENSE). It
-covers two copyright holders: Alec Xu for the plugin, and David Heinemeier
-Hansson for the parts derived from Omarchy. Fedarchy is an unofficial
-derivative of Omarchy — see the project's `THIRD_PARTY_NOTICES.md` and
-`docs/OMARCHY_PORT.md` for that relationship.
+covers two copyright holders: **Alec Xu** for the plugin, and **David
+Heinemeier Hansson** for the parts of the plugin the author derived from
+Omarchy. That second notice covers the plugin author's own use of Omarchy
+code — it does not make the plugin an Omarchy component, and Fedarchy adds
+nothing to it beyond the changes listed below.
 
 ## What Fedarchy changed
 

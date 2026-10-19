@@ -22,6 +22,7 @@ you can select) · **Externally managed** (depends on a system service) ·
 | **Lock screen** | Lock/unlock screen with themed assets | Lock the session with your theme | `shell/plugins/lock/` | Available |
 | **OSD** | On-screen display for volume/brightness | Immediate feedback on media keys | `shell/plugins/osd/` | Available |
 | **Clipboard history** | Clipboard manager | Recover what you copied | `shell/plugins/clipboard/` | Available |
+| **Audio visualizer** | A spectrum and waveform visualizer with the song and artist beside it | See the music move; the bars, size and colour come from `~/.config/omarchy/konobeat.json` | `shell/plugins/konobeat/` — **vendored from the third-party Konobeat plugin**, see [NOTICE.md](../shell/plugins/konobeat/NOTICE.md) | Available |
 | **Agents / reminders** | Agent-backed reminder helpers | Lightweight reminders | `shell/plugins/agents/`, `shell/plugins/reminders/` | Available |
 
 The shell is one long-running Quickshell process; the bar, panels, and overlays

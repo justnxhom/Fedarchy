@@ -79,6 +79,21 @@ bash scripts/test.sh
 
 The integration fixture is intentionally multi-kind so service teardown and bar-widget registration are tested separately. A real external plugin must still be installed, enabled, restarted, disabled, re-enabled, and removed before compatibility is claimed.
 
+## Vendored first-party plugins
+
+Most first-party plugins in `shell/plugins/` were written for this project.
+One is **third-party code carried into the repository**:
+
+| Plugin | Upstream | Licence |
+|---|---|---|
+| `omarchy.konobeat` | [Konobeat](https://github.com/xvvhang/omarchy-konobeat-plugin) by Alec Xu | MIT — see [`shell/plugins/konobeat/NOTICE.md`](../shell/plugins/konobeat/NOTICE.md) |
+
+It is vendored rather than installed from its upstream repository so that the
+audio visualizer's appearance can be read from a configuration file the user
+owns. It did not come from upstream Omarchy, and it is not part of this
+project's Omarchy port. The full provenance record is in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
 ## Current compatibility
 
 Fedarchy follows the current Quattro manifest, registry, bar layout, loader, lifecycle, and CLI shape. It adds Fedora-native package/backend behavior, controlled capability facades, safer configuration mutation, and a stricter validator. It does not claim that every Arch-oriented plugin is portable; external dependencies and helper binaries must be checked individually.

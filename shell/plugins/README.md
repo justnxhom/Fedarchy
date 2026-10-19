@@ -1,6 +1,8 @@
 # First-party plugins
 
-These plugins ship with Omarchy and are discovered by the shell at startup.
+These plugins ship with Fedarchy and are discovered by the shell at startup.
+One of them is third-party code vendored into the repository rather than
+written for it — see [Konobeat](#konobeat) below.
 They use the same `manifest.json` contract as third-party plugins; the
 only difference is that the shell flags them with `__isFirstParty: true`.
 First-party non-bar plugins are enabled unless listed in `disabledPlugins[]`;
@@ -36,10 +38,26 @@ User-installed plugins live alongside these conceptually but on disk under
 | Lock screen   | `omarchy.lock`            | `service`               | `lock/Service.qml`                    |
 | OSD           | `omarchy.osd`             | `panel`                 | `osd/Osd.qml`                         |
 | Polkit agent  | `omarchy.polkit`          | `service`               | `polkit/PolkitAgent.qml`              |
+| Konobeat      | `omarchy.konobeat`        | `service`, `bar-widget` | `konobeat/Service.qml`, `konobeat/BarWidget.qml` |
 
 First-party bar-only widgets also carry manifests next to their QML files,
 e.g. `bar/widgets/Workspaces.manifest.json`. Rich popup widgets live in their
 own plugin directories, each with its own `manifest.json`.
+
+## Konobeat
+
+The audio visualizer in the bar: a real PipeWire spectrum or waveform, with
+the song and artist scrolling beside it, and a panel with the transport
+controls.
+
+**This plugin is not an Omarchy component and did not come from upstream
+Omarchy.** It is the **Konobeat** plugin by **Alec Xu**, published separately
+as <https://github.com/xvvhang/omarchy-konobeat-plugin> and vendored here so
+that the visualizer's appearance could be read from a configuration file the
+user owns — `~/.config/omarchy/konobeat.json`. The licence, the copyright
+holders and the changes this project made are recorded in
+[`konobeat/NOTICE.md`](konobeat/NOTICE.md) and in the project's
+[`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
 
 ## Bar
 

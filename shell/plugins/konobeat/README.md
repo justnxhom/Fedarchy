@@ -1,5 +1,19 @@
 # Konobeat
 
+> **Provenance — read this first.**
+>
+> This plugin is **not** part of upstream Omarchy, it did not come from the
+> upstream Omarchy repository, and it was not written for this project. It is
+> the **Konobeat** plugin by **Alec Xu**, vendored here from
+> <https://github.com/xvvhang/omarchy-konobeat-plugin> so that the
+> visualizer's appearance could be configured from a file the user owns.
+>
+> The MIT licence and both copyright holders are reproduced in
+> [`LICENSE`](LICENSE). What this project changed, and why, is listed in
+> [`NOTICE.md`](NOTICE.md); the provenance record is in the project's
+> `THIRD_PARTY_NOTICES.md`. Everything below the note is upstream's own
+> documentation.
+
 Part of **Konochi**, a personal Omarchy plugin series by Alec Xu.
 
 ## Preview
