@@ -131,11 +131,23 @@ window.background {
   color: @fg_color;
 }
 
+/* No border-bottom here.
+ *
+ * This rule used to carry one, and it never rendered: while the header bars
+ * still had rounded corners, GTK drew the bottom edge following the curve and
+ * the line was effectively invisible. Squaring the corners made it appear for
+ * the first time, and it then showed a seam that did not line up -- an
+ * application with two header bars of its own (a file manager with a sidebar
+ * and a content view) puts them at different heights, so one line sat 5px
+ * below the other.
+ *
+ * Leaving the border off restores the appearance this theme always had, and
+ * the separation between the header bar and the content is carried by the
+ * background difference instead. */
 headerbar,
 .titlebar {
   background-color: @bg_color;
   color: @fg_color;
-  border-bottom: 1px solid shade(@bg_color, 0.8);
 }
 
 headerbar button {

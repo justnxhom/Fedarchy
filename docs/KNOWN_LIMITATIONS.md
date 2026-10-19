@@ -127,8 +127,6 @@ recommendation.
 `rollback` restores the most recent backup. It is **not** an automatic undo of a
 run that failed partway. Recovery is manual.
 
----
-
 ## 5. Provenance and legal
 
 ### 5.1 Theme asset licences not fully verified

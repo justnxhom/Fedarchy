@@ -110,6 +110,19 @@ for version in 3.0 4.0; do
   install_atomically "$GENERATED" "$target"
   set_ini_key "$config_dir/settings.ini" gtk-theme-name "$theme_name"
 
+  # The icon theme is pinned, not themed.
+  #
+  # Every theme used to name its own icon theme in icons.theme -- Yaru-blue for
+  # nord, Yaru-red for dracula, and so on. None of those was ever installed,
+  # so the whole mechanism ran on fallbacks and the icons silently stopped
+  # matching the theme. It also meant a theme switch changed every icon in
+  # every GTK application.
+  #
+  # Nordic-darker is the icon theme that is actually installed and in use, so
+  # pinning it keeps one consistent set of icons across every theme and makes
+  # the choice explicit rather than implied by a missing package.
+  set_ini_key "$config_dir/settings.ini" gtk-icon-theme-name "Nordic-darker"
+
   # The stylesheet sets foreground and background explicitly, but libadwaita
   # widgets -- the file manager's sidebar, header bars -- draw some of their own
   # base colours from this key instead. Left unset, they follow the desktop

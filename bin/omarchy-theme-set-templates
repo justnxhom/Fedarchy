@@ -399,6 +399,19 @@ if [[ -f $COLORS_FILE ]]; then
   done
 
   rm "$sed_script"
+
+  # The square-corner rules belong to every theme, so they are appended after
+  # whichever gtk.css won rather than living only in the template.
+  #
+  # A theme that ships its own gtk.css has it copied into the output directory
+  # before this runs, and the template deliberately does not overwrite a file
+  # that already exists. So the template's version is skipped entirely for
+  # those themes, and they would lose the rules. Appending here covers both
+  # cases with one step.
+  if [[ -f $NEXT_THEME_DIR/gtk.css && -f $TEMPLATES_DIR/gtk-square.css ]]; then
+    printf '\n/* Square corners, appended for every theme. */\n' >>"$NEXT_THEME_DIR/gtk.css"
+    cat "$TEMPLATES_DIR/gtk-square.css" >>"$NEXT_THEME_DIR/gtk.css"
+  fi
 fi
 
 apply_shell_section_overrides
