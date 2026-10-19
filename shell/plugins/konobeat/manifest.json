@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy.konobeat",
+  "name": "Konobeat",
+  "version": "1.0.0",
+  "author": "Alec Xu (upstream), Fedarchy",
+  "license": "MIT",
+  "description": "Scrolling song and artist with real PipeWire spectrum and waveform visualizers, configurable from ~/.config/omarchy/konobeat.json",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Konobeat",
+    "description": "Right-click display modes, left-click playback, hover for details",
+    "category": "Media",
+    "allowMultiple": false
+  },
+  "homepage": "https://github.com/xvvhang/omarchy-konobeat-plugin"
+}

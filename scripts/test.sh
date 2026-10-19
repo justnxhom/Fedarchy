@@ -92,6 +92,7 @@ run_suite "installer (isolated)" bash "${PROJECT_ROOT}/tests/installer-test.sh"
 run_suite "MPRIS model" node --test "${PROJECT_ROOT}/tests/media-model-test.js" "${PROJECT_ROOT}/tests/media-service-contract-test.js"
 run_suite "clock format cycle" node --test "${PROJECT_ROOT}/tests/clock-format-cycle-test.js"
 run_suite "bar inline settings" node --test "${PROJECT_ROOT}/tests/bar-inline-settings-test.js"
+run_suite "konobeat config" node --test "${PROJECT_ROOT}/tests/konobeat-config-test.js"
 run_suite "background transitions" node --test "${PROJECT_ROOT}/tests/background-transition-test.js"
 
 echo ""

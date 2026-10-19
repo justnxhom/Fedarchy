@@ -120,6 +120,25 @@ in a repository checkout. Nothing is documented as being available from them.
 `logo.txt` contains an ASCII-art wordmark for the project name. It is an
 original text asset created for this repository.
 
+### 2.5 Konobeat — vendored plugin
+
+| Field | Value |
+|---|---|
+| **Component** | [`shell/plugins/konobeat/`](shell/plugins/konobeat/) — the bar widget and service that draw the audio visualizer |
+| **Purpose** | A spectrum and waveform visualizer for the bar, with the song and artist scrolling beside it |
+| **Author** | Alec Xu |
+| **Source** | <https://github.com/xvvhang/omarchy-konobeat-plugin> |
+| **Licence** | MIT — the upstream text is reproduced verbatim in [`shell/plugins/konobeat/LICENSE`](shell/plugins/konobeat/LICENSE) |
+| **Required notice** | `Copyright (c) 2026 Alec Xu` and `Copyright (c) David Heinemeier Hansson` (Omarchy-derived code) |
+| **Verification status** | **Verified 2026-10-19** — the upstream `LICENSE` file was read directly from the installed checkout at revision `d0d0683` and carried over unchanged, and the manifest, the QML and the Python helper were taken from that same revision |
+
+The plugin is vendored rather than installed from its upstream repository so
+that the visualizer's appearance can be read from a configuration file the
+user owns, and so that the project can keep the plugin in step with the rest
+of the shell. The changes made to it are listed in
+[`shell/plugins/konobeat/NOTICE.md`](shell/plugins/konobeat/NOTICE.md). The
+upstream project remains the author of the work.
+
 ---
 
 ## 3. Software used at runtime but **not** bundled

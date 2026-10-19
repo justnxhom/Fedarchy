@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to ~/.config/omarchy/konobeat.json to use it. Every value is optional, and a value that cannot be used is corrected and reported in the journal rather than obeyed.",
+  "bands": 16,
+  "width": 64,
+  "height": 18,
+  "color": "#81a1c1"
+}
