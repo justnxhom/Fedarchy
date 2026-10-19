@@ -616,6 +616,15 @@ Item {
       for (var s = 0; s < moduleSlots.length; s++) {
         var slot = moduleSlots[s]
         if (!slot || slot.region !== change.region || slot.moduleName !== entryId(change.entry)) continue
+        // The slot's entry is what its settings are derived from, and the
+        // bar's Repeater models are plain arrays that QML never re-diffs when
+        // an element is replaced in place. Left alone, the slot keeps
+        // pointing at the entry this change replaced, so the next time the
+        // widget is rebuilt the bar injects the old settings over the new
+        // ones and the change silently reverts -- which is what a widget
+        // whose own UI writes inline settings sees. Point the slot at the
+        // new entry as well, so the derived settings follow the change.
+        slot.entry = change.entry
         var item = slot.activeItem
         if (item && "settings" in item) item.settings = settings
       }
